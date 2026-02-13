@@ -1,0 +1,100 @@
+#!/usr/bin/env escript
+%% -*- erlang -*-
+%%! -pa ebin -pa ../ebin
+
+-include_lib("antlr4/include/antlr4_runtime.hrl").
+
+main([InputFile]) ->
+    {ok, Data} = file:read_file(InputFile),
+    Input = antlr4_input_stream:new(Data),
+    Lexer = <lexerName; format="lower">_lexer:new(Input),
+<if(parserName)>
+    TokenStream = antlr4_token_stream:new(Lexer),
+    Parser = <parserName; format="lower">_parser:new(TokenStream),
+<if(traceATN)>
+    %% ATN tracing not yet implemented
+<endif>
+<if(!buildParseTree)>
+    Parser1 = antlr4_parser:set_build_parse_trees(Parser, false),
+<else>
+    Parser1 = Parser,
+<endif>
+<if(showDiagnosticErrors)>
+    Parser2 = antlr4_parser:add_error_listener(Parser1, antlr4_diagnostic_error_listener),
+<else>
+    Parser2 = Parser1,
+<endif>
+    {Tree, _Parser3} = <parserName; format="lower">_parser:'<parserStartRuleName>'(Parser2),
+    %% Walk the tree to verify shape
+    verify_tree_shape(Tree),
+    ok;
+<else>
+    TokenStream = antlr4_token_stream:new(Lexer),
+    TokenStream1 = antlr4_token_stream:fill(TokenStream),
+    Tokens = antlr4_token_stream:get_all_tokens(TokenStream1),
+    lists:foreach(fun(Token) ->
+        io:format("~s~n", [format_token(Token)])
+    end, Tokens),
+<if(showDFA)>
+    %% DFA printing not yet implemented
+<endif>
+    ok;
+<endif>
+
+main(_) ->
+    io:format("Usage: test_runner.erl \<input-file>~n"),
+    halt(1).
+
+<if(parserName)>
+verify_tree_shape(Tree) ->
+    Children = antlr4_parse_tree:get_child_count(Tree),
+    verify_children(Tree, 0, Children).
+
+verify_children(_Tree, Index, Count) when Index >= Count ->
+    ok;
+verify_children(Tree, Index, Count) ->
+    Child = antlr4_parse_tree:get_child(Tree, Index),
+    case Child of
+        undefined ->
+            ok;
+        _ ->
+            Parent = antlr4_parse_tree:get_parent(Child),
+            case Parent =:= Tree of
+                true ->
+                    verify_tree_shape(Child);
+                false ->
+                    io:format("Invalid parse tree shape detected.~n"),
+                    halt(1)
+            end
+    end,
+    verify_children(Tree, Index + 1, Count).
+<endif>
+
+format_token(Token) ->
+    Type = antlr4_token:get_type(Token),
+    Text = antlr4_token:get_text(Token),
+    Line = antlr4_token:get_line(Token),
+    Column = antlr4_token:get_char_position_in_line(Token),
+    Channel = antlr4_token:get_channel(Token),
+    io_lib:format("[@~p,~p:~p='~s',\<~p>,~p:~p]",
+        [antlr4_token:get_token_index(Token),
+         antlr4_token:get_start_index(Token),
+         antlr4_token:get_stop_index(Token),
+         escape_text(Text),
+         Type,
+         Line,
+         Column]).
+
+escape_text(undefined) ->
+    "";
+escape_text(Text) when is_binary(Text) ->
+    escape_text(binary_to_list(Text));
+escape_text(Text) ->
+    lists:map(fun(C) ->
+        case C of
+            $\n -> "\\n";
+            $\r -> "\\r";
+            $\t -> "\\t";
+            _ -> C
+        end
+    end, Text).
