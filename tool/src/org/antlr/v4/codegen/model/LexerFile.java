@@ -15,6 +15,7 @@ public class LexerFile extends OutputFile {
 	public String exportMacro; // from -DexportMacro cmd-line
 	public boolean genListener; // from -listener cmd-line
 	public boolean genVisitor; // from -visitor cmd-line
+	public String grammarName;
 	@ModelElement public Lexer lexer;
 	@ModelElement public Map<String, Action> namedActions;
 
@@ -25,5 +26,9 @@ public class LexerFile extends OutputFile {
 		exportMacro = factory.getGrammar().getOptionString("exportMacro");
 		genListener = factory.getGrammar().tool.gen_listener;
 		genVisitor = factory.getGrammar().tool.gen_visitor;
+		String gname = factory.getGrammar().name;
+		// For combined grammars, the lexer grammar name ends with "Lexer"
+		// We want the base name for consistent file naming
+		grammarName = gname.endsWith("Lexer") ? gname.substring(0, gname.length() - 5) : gname;
 	}
 }

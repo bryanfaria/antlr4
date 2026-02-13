@@ -30,6 +30,10 @@ public class UnicodeEscapes {
 			case "Swift":
 				sb.append(String.format("\\u{%04X}", codePoint));
 				break;
+			case "Erlang":
+				// Erlang uses \x{H...} format for Unicode escapes
+				sb.append(String.format("\\x{%X}", codePoint));
+				break;
 			case "Java":
 			case "JavaScript":
 			case "TypeScript":

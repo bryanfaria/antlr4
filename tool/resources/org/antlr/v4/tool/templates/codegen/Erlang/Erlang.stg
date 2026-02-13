@@ -1,0 +1,1025 @@
+/*
+ * [The "BSD license"]
+ *  Copyright (c) 2012-2017 The ANTLR Project. All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *
+ *  1. Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *  2. Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *  3. The name of the author may not be used to endorse or promote products
+ *     derived from this software without specific prior written permission.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ *  IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ *  OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ *  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ *  NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+ErlangTypeMap ::= [
+    "boolean":"boolean()",
+    "int":"integer()",
+    "float":"float()",
+    "String":"binary()",
+    default : key
+]
+
+fileHeader(grammarFileName, ANTLRVersion) ::= <<
+%% Code generated from <grammarFileName> by ANTLR <ANTLRVersion>. DO NOT EDIT.
+>>
+
+ParserFile(file, parser, namedActions, contextSuperClass) ::= <<
+<fileHeader(file.grammarFileName, file.ANTLRVersion)>
+
+-module(<file.grammarName; format="lower">_parser).
+
+-export([
+    new/1,
+    <parser.rules:{r | '<r.name>'/1}; separator=",\n    ">
+]).
+
+-include_lib("antlr4/include/antlr4_runtime.hrl").
+<if(namedActions.header)>
+
+<namedActions.header>
+<endif>
+
+<if(parser)>
+
+<parser>
+<endif>
+>>
+
+ListenerFile(file, header, namedActions) ::= <<
+<fileHeader(file.grammarFileName, file.ANTLRVersion)>
+
+-module(<file.grammarName; format="lower">_listener).
+
+%% Listener behavior for <file.grammarName>
+
+-export([behaviour_info/1]).
+
+behaviour_info(callbacks) ->
+    [
+        {enter_every_rule, 1},
+        {exit_every_rule, 1},
+        {visit_terminal, 1},
+        {visit_error_node, 1}<if(file.listenerNames)>,
+        <file.listenerNames:{lname | {enter_<lname; format="lower">, 1\},
+        {exit_<lname; format="lower">, 1\}}; separator=",\n        "><endif>
+    ];
+behaviour_info(_Other) ->
+    undefined.
+>>
+
+BaseListenerFile(file, header, namedActions) ::= <<
+<fileHeader(file.grammarFileName, file.ANTLRVersion)>
+
+-module(<file.grammarName; format="lower">_base_listener).
+
+-behaviour(<file.grammarName; format="lower">_listener).
+
+-export([
+    enter_every_rule/1,
+    exit_every_rule/1,
+    visit_terminal/1,
+    visit_error_node/1<if(file.listenerNames)>,
+    <file.listenerNames:{lname | enter_<lname; format="lower">/1,
+    exit_<lname; format="lower">/1}; separator=",\n    "><endif>
+]).
+
+enter_every_rule(_Ctx) -> ok.
+exit_every_rule(_Ctx) -> ok.
+visit_terminal(_Node) -> ok.
+visit_error_node(_Node) -> ok.
+
+<file.listenerNames:{lname |
+enter_<lname; format="lower">(_Ctx) -> ok.
+exit_<lname; format="lower">(_Ctx) -> ok.
+}; separator="\n">
+>>
+
+VisitorFile(file, header, namedActions) ::= <<
+<fileHeader(file.grammarFileName, file.ANTLRVersion)>
+
+-module(<file.grammarName; format="lower">_visitor).
+
+%% Visitor behavior for <file.grammarName>
+
+-export([behaviour_info/1]).
+
+behaviour_info(callbacks) ->
+    [
+        {visit/1},
+        {visit_children/1}<if(file.visitorNames)>,
+        <file.visitorNames:{lname | {visit_<lname; format="lower">, 1\}}; separator=",\n        "><endif>
+    ];
+behaviour_info(_Other) ->
+    undefined.
+>>
+
+BaseVisitorFile(file, header, namedActions) ::= <<
+<fileHeader(file.grammarFileName, file.ANTLRVersion)>
+
+-module(<file.grammarName; format="lower">_base_visitor).
+
+-behaviour(<file.grammarName; format="lower">_visitor).
+
+-export([
+    visit/1,
+    visit_children/1<if(file.visitorNames)>,
+    <file.visitorNames:{lname | visit_<lname; format="lower">/1}; separator=",\n    "><endif>
+]).
+
+visit(Tree) ->
+    antlr4_parse_tree:accept(Tree, ?MODULE).
+
+visit_children(Ctx) ->
+    antlr4_parse_tree:visit_children(Ctx, ?MODULE).
+
+<file.visitorNames:{lname |
+visit_<lname; format="lower">(Ctx) ->
+    visit_children(Ctx).
+}; separator="\n">
+>>
+
+Parser(parser, funcs, atn, sempredFuncs, superClass) ::= <<
+%% Parser state record
+-record(parser_state, {
+    input :: antlr4_token_stream:token_stream(),
+    error_handler :: module(),
+    build_parse_trees = true :: boolean(),
+    ctx :: term(),
+    atn :: antlr4_atn:atn(),
+    decision_to_dfa :: [antlr4_dfa:dfa()],
+    shared_context_cache :: antlr4_prediction_context:cache()
+}).
+
+%% Token type constants
+<if(parser.tokens)>
+<parser.tokens:{k | -define(<parser.name; format="upper">_<k>, <parser.tokens.(k)>).}; separator="\n">
+<endif>
+
+%% Rule index constants
+<if(parser.rules)>
+<parser.rules:{r | -define(<parser.name; format="upper">_RULE_<r.name>, <r.index>).}; separator="\n">
+<endif>
+
+%% Rule names
+-define(RULE_NAMES, [<parser.ruleNames:{r | "<r>"}; separator=", ">]).
+
+%% Literal names
+-define(LITERAL_NAMES, [<parser.literalNames; null="undefined", separator=", ">]).
+
+%% Symbolic names
+-define(SYMBOLIC_NAMES, [<parser.symbolicNames; null="undefined", separator=", ">]).
+
+%% Serialized ATN
+-define(SERIALIZED_ATN, <atn>).
+
+%% Create a new parser
+new(Input) ->
+    ATN = antlr4_atn_deserializer:deserialize(?SERIALIZED_ATN),
+    DecisionToDFA = antlr4_atn:create_decision_to_dfa(ATN),
+    SharedContextCache = antlr4_prediction_context:new_cache(),
+    #parser_state{
+        input = Input,
+        error_handler = antlr4_default_error_strategy,
+        atn = ATN,
+        decision_to_dfa = DecisionToDFA,
+        shared_context_cache = SharedContextCache
+    }.
+
+<if(funcs)>
+
+<funcs; separator="\n\n">
+<endif>
+
+<if(sempredFuncs)>
+
+sempred(LocalCtx, RuleIndex, PredIndex, State) ->
+    case RuleIndex of
+        <parser.sempredFuncs.values:{f | ?<parser.name; format="upper">_RULE_<f.name> ->
+            '<f.escapedName>_sempred'(LocalCtx, PredIndex, State)}; separator=";\n        ">
+    end.
+
+<sempredFuncs.values; separator="\n\n">
+<endif>
+>>
+
+RuleFunction(currentRule, args, code, locals, ruleCtx, altLabelCtxs, namedActions, finallyAction, postamble, exceptions) ::= <<
+%% Rule: <currentRule.name>
+'<currentRule.escapedName>'(State0) ->
+    Ctx0 = antlr4_parser_rule_context:new(
+        antlr4_parser:get_ctx(State0),
+        antlr4_parser:get_state_number(State0),
+        ?<parser.name; format="upper">_RULE_<currentRule.name>
+    ),
+    State1 = antlr4_parser:enter_rule(State0, Ctx0, ?<parser.name; format="upper">_RULE_<currentRule.name>),
+    <if(namedActions.init)>
+    <namedActions.init>
+    <endif>
+    <if(currentRule.hasLookaheadBlock)>
+    _Alt = 0,
+    <endif>
+    try
+        <code>
+        <if(postamble)>
+        <postamble; separator=",\n        ">
+        <endif>
+    catch
+        _:Exception ->
+            State99 = antlr4_parser:set_exception(State1, Exception),
+            antlr4_error_handler:report_error(State99, Exception),
+            antlr4_error_handler:recover(State99, Exception)
+    <if(finallyAction)>
+    after
+        <finallyAction>
+    <endif>
+    end,
+    antlr4_parser:exit_rule(State1).
+>>
+
+LeftRecursiveRuleFunction(currentRule, args, code, locals, ruleCtx, altLabelCtxs, namedActions, finallyAction, postamble) ::= <<
+%% Left-recursive rule: <currentRule.name>
+'<currentRule.escapedName>'(State0) ->
+    '<currentRule.escapedName>'(State0, 0).
+
+'<currentRule.escapedName>'(State0, Precedence) ->
+    ParentCtx = antlr4_parser:get_ctx(State0),
+    ParentState = antlr4_parser:get_state_number(State0),
+    Ctx0 = antlr4_parser_rule_context:new(ParentCtx, ParentState, ?<parser.name; format="upper">_RULE_<currentRule.name>),
+    _PrevCtx = Ctx0,
+    _StartState = <currentRule.startState>,
+    State1 = antlr4_parser:enter_recursion_rule(State0, Ctx0, ?<parser.name; format="upper">_RULE_<currentRule.name>, Precedence),
+    <if(namedActions.init)>
+    <namedActions.init>
+    <endif>
+    <if(currentRule.hasLookaheadBlock)>
+    _Alt = 0,
+    <endif>
+    try
+        <code>
+        <if(postamble)>
+        <postamble; separator=",\n        ">
+        <endif>
+    catch
+        _:Exception ->
+            State99 = antlr4_parser:set_exception(State1, Exception),
+            antlr4_error_handler:report_error(State99, Exception),
+            antlr4_error_handler:recover(State99, Exception)
+    <if(finallyAction)>
+    after
+        <finallyAction>
+    <endif>
+    end,
+    antlr4_parser:unroll_recursion_contexts(State1, ParentCtx).
+>>
+
+CodeBlockForOuterMostAlt(currentOuterMostAltCodeBlock, locals, preamble, ops) ::= <<
+<if(currentOuterMostAltCodeBlock.altLabel)>
+Ctx1 = new_<currentOuterMostAltCodeBlock.altLabel; format="lower">_context(Ctx0),
+<endif>
+State2 = antlr4_parser:enter_outer_alt(State1, Ctx1, <currentOuterMostAltCodeBlock.alt.altNum>),
+<CodeBlockForAlt(currentAltCodeBlock=currentOuterMostAltCodeBlock, ...)>
+>>
+
+CodeBlockForAlt(currentAltCodeBlock, locals, preamble, ops) ::= <<
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+<if(ops)>
+<ops; separator=",\n">
+<endif>
+>>
+
+LL1AltBlock(choice, preamble, alts, error) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+case antlr4_token_stream:la(antlr4_parser:get_input(State_<choice.stateNumber>), 1) of
+    <choice.altLook, alts:{look, alt | <look:{l | ?<parser.name; format="upper">_<l.name>}; separator=" ; "> ->
+        <alt>}; separator=";\n    ">
+    <if(error)>;
+    _ ->
+        <error>
+    <endif>
+end
+>>
+
+LL1OptionalBlock(choice, alts, error) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+case antlr4_token_stream:la(antlr4_parser:get_input(State_<choice.stateNumber>), 1) of
+    <choice.altLook, alts:{look, alt | <look:{l | ?<parser.name; format="upper">_<l.name>}; separator=" ; "> ->
+        <alt>}; separator=";\n    ">;
+    _ ->
+        ok
+end
+>>
+
+LL1OptionalBlockSingleAlt(choice, expr, alts, preamble, error, followExpr) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+case <expr> of
+    true ->
+        <alts; separator=",\n        ">;
+    false ->
+        ok
+end
+>>
+
+LL1StarBlockSingleAlt(choice, loopExpr, alts, preamble, iteration) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+star_loop_<choice.stateNumber>(State_<choice.stateNumber>).
+
+star_loop_<choice.stateNumber>(LoopState) ->
+    case <loopExpr> of
+        true ->
+            <alts; separator=",\n            ">,
+            LoopState2 = antlr4_parser:set_state(LoopState, <choice.loopBackStateNumber>),
+            antlr4_error_handler:sync(LoopState2),
+            <if(iteration)>
+            <iteration>,
+            <endif>
+            star_loop_<choice.stateNumber>(LoopState2);
+        false ->
+            LoopState
+    end
+>>
+
+LL1PlusBlockSingleAlt(choice, loopExpr, alts, preamble, iteration) ::= <<
+State_<choice.blockStartStateNumber> = antlr4_parser:set_state(State1, <choice.blockStartStateNumber>),
+antlr4_error_handler:sync(State_<choice.blockStartStateNumber>),
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+plus_loop_<choice.stateNumber>(State_<choice.blockStartStateNumber>, true).
+
+plus_loop_<choice.stateNumber>(LoopState, true) ->
+    <alts; separator=",\n    ">,
+    LoopState2 = antlr4_parser:set_state(LoopState, <choice.stateNumber>),
+    antlr4_error_handler:sync(LoopState2),
+    <if(iteration)>
+    <iteration>,
+    <endif>
+    plus_loop_<choice.stateNumber>(LoopState2, <loopExpr>);
+plus_loop_<choice.stateNumber>(LoopState, false) ->
+    LoopState
+>>
+
+AltBlock(choice, preamble, alts, error) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+<if(preamble)>
+<preamble; separator=",\n">
+<endif>
+case antlr4_parser_atn_simulator:adaptive_predict(
+        antlr4_parser:get_interpreter(State_<choice.stateNumber>),
+        antlr4_parser:get_input(State_<choice.stateNumber>),
+        <choice.decision>,
+        antlr4_parser:get_ctx(State_<choice.stateNumber>)) of
+    <alts:{alt | <i> ->
+        <alt>}; separator=";\n    ">
+end
+>>
+
+OptionalBlock(choice, alts, error) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+<alts:{alt | case antlr4_parser_atn_simulator:adaptive_predict(
+        antlr4_parser:get_interpreter(State_<choice.stateNumber>),
+        antlr4_parser:get_input(State_<choice.stateNumber>),
+        <choice.decision>,
+        antlr4_parser:get_ctx(State_<choice.stateNumber>)) of
+    <i><if(!choice.ast.greedy)> + 1<endif> ->
+        <alt>
+end}; separator=";\n">
+>>
+
+StarBlock(choice, alts, Sync, iteration) ::= <<
+State_<choice.stateNumber> = antlr4_parser:set_state(State1, <choice.stateNumber>),
+antlr4_error_handler:sync(State_<choice.stateNumber>),
+Alt_<choice.stateNumber> = antlr4_parser_atn_simulator:adaptive_predict(
+    antlr4_parser:get_interpreter(State_<choice.stateNumber>),
+    antlr4_parser:get_input(State_<choice.stateNumber>),
+    <choice.decision>,
+    antlr4_parser:get_ctx(State_<choice.stateNumber>)),
+star_block_<choice.stateNumber>(State_<choice.stateNumber>, Alt_<choice.stateNumber>).
+
+star_block_<choice.stateNumber>(BlockState, Alt) when Alt =/= <choice.exitAlt>, Alt =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER ->
+    case Alt of
+        1<if(!choice.ast.greedy)> + 1<endif> ->
+            <if(iteration)>
+            <iteration>,
+            <endif>
+            <alts>
+    end,
+    BlockState2 = antlr4_parser:set_state(BlockState, <choice.loopBackStateNumber>),
+    antlr4_error_handler:sync(BlockState2),
+    Alt2 = antlr4_parser_atn_simulator:adaptive_predict(
+        antlr4_parser:get_interpreter(BlockState2),
+        antlr4_parser:get_input(BlockState2),
+        <choice.decision>,
+        antlr4_parser:get_ctx(BlockState2)),
+    star_block_<choice.stateNumber>(BlockState2, Alt2);
+star_block_<choice.stateNumber>(BlockState, _Alt) ->
+    BlockState
+>>
+
+PlusBlock(choice, alts, error) ::= <<
+State_<choice.blockStartStateNumber> = antlr4_parser:set_state(State1, <choice.blockStartStateNumber>),
+antlr4_error_handler:sync(State_<choice.blockStartStateNumber>),
+Alt_<choice.stateNumber> = 1<if(!choice.ast.greedy)> + 1<endif>,
+plus_block_<choice.stateNumber>(State_<choice.blockStartStateNumber>, Alt_<choice.stateNumber>).
+
+plus_block_<choice.stateNumber>(BlockState, Alt) when Alt =/= <choice.exitAlt>, Alt =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER ->
+    case Alt of
+        <alts:{alt | <i><if(!choice.ast.greedy)> + 1<endif> ->
+            <alt>}; separator=";\n        ">
+        <if(error)>;
+        _ ->
+            <error>
+        <endif>
+    end,
+    BlockState2 = antlr4_parser:set_state(BlockState, <choice.loopBackStateNumber>),
+    antlr4_error_handler:sync(BlockState2),
+    Alt2 = antlr4_parser_atn_simulator:adaptive_predict(
+        antlr4_parser:get_interpreter(BlockState2),
+        antlr4_parser:get_input(BlockState2),
+        <choice.decision>,
+        antlr4_parser:get_ctx(BlockState2)),
+    plus_block_<choice.stateNumber>(BlockState2, Alt2);
+plus_block_<choice.stateNumber>(BlockState, _Alt) ->
+    BlockState
+>>
+
+Sync(s) ::= "sync(<s.expecting.name>)"
+
+ThrowNoViableAlt(t) ::= <<
+throw({no_viable_alt, antlr4_no_viable_alt_exception:new(State1)})
+>>
+
+TestSetInline(s) ::= <<
+<s.bitsets:{bits | <if(rest(rest(bits.tokens)))><bitsetBitfieldComparison(s, bits)><else><bitsetInlineComparison(s, bits)><endif>}; separator=" orelse ">
+>>
+
+testShiftInRange(shiftAmount) ::= <<
+((<shiftAmount>) band (bnot 16#3f)) =:= 0
+>>
+
+bitsetBitfieldComparison(s, bits) ::= <%
+(<testShiftInRange({<offsetShiftVar(s.varName, bits.shift)>})> andalso (((1 bsl <offsetShiftVar(s.varName, bits.shift)>) band <bits.calculated>) =/= 0))
+%>
+
+isZero ::= [
+"0":true,
+default:false
+]
+
+offsetShiftVar(shiftAmount, offset) ::= <%
+<if(!isZero.(offset))>(<shiftAmount> - <offset>)<else><shiftAmount><endif>
+%>
+
+offsetShiftType(shiftAmount, offset) ::= <%
+<if(!isZero.(offset))>(?<parser.name; format="upper">_<shiftAmount> - <offset>)<else>?<parser.name; format="upper">_<shiftAmount><endif>
+%>
+
+bitsetInlineComparison(s, bits) ::= <%
+<bits.tokens:{t | <s.varName> =:= ?<parser.name; format="upper">_<t.name>}; separator=" orelse ">
+%>
+
+InvokeRule(r, argExprsChunks) ::= <<
+State_<r.stateNumber> = antlr4_parser:set_state(State1, <r.stateNumber>),
+<if(r.labels)>
+<if(r.ast.options.p)>
+{<r.labels:{l | <l.escapedName>}; separator=", ">, State_<r.stateNumber>_result} = '<r.escapedName>'(State_<r.stateNumber>, <r.ast.options.p><if(argExprsChunks)>, <argExprsChunks><endif>)
+<else>
+{<r.labels:{l | <l.escapedName>}; separator=", ">, State_<r.stateNumber>_result} = '<r.escapedName>'(State_<r.stateNumber><if(argExprsChunks)>, <argExprsChunks><endif>)
+<endif>
+<else>
+<if(r.ast.options.p)>
+'<r.escapedName>'(State_<r.stateNumber>, <r.ast.options.p><if(argExprsChunks)>, <argExprsChunks><endif>)
+<else>
+'<r.escapedName>'(State_<r.stateNumber><if(argExprsChunks)>, <argExprsChunks><endif>)
+<endif>
+<endif>
+>>
+
+MatchToken(m) ::= <<
+State_<m.stateNumber> = antlr4_parser:set_state(State1, <m.stateNumber>),
+<if(m.labels)>
+<m.labels:{l | <l.escapedName>}; separator=", "> = antlr4_parser:match(State_<m.stateNumber>, ?<parser.name; format="upper">_<m.escapedName>)
+<else>
+antlr4_parser:match(State_<m.stateNumber>, ?<parser.name; format="upper">_<m.escapedName>)
+<endif>
+>>
+
+MatchSet(m, expr, capture) ::= "<CommonSetStuff(m, expr, capture, false)>"
+
+MatchNotSet(m, expr, capture) ::= "<CommonSetStuff(m, expr, capture, true)>"
+
+CommonSetStuff(m, expr, capture, invert) ::= <<
+State_<m.stateNumber> = antlr4_parser:set_state(State1, <m.stateNumber>),
+<if(m.labels)>
+<m.labels:{l | <l.escapedName>}; separator=", "> = antlr4_token_stream:lt(antlr4_parser:get_input(State_<m.stateNumber>), 1),
+<endif>
+<if(capture)>
+<capture>,
+<endif>
+<if(invert)>
+case <m.varName> =\< 0 orelse <expr> of
+<else>
+case not (<expr>) of
+<endif>
+    true ->
+        <if(m.labels)>
+        <m.labels:{l | <l.escapedName>}; separator=", "> = antlr4_error_handler:recover_inline(State_<m.stateNumber>);
+        <else>
+        antlr4_error_handler:recover_inline(State_<m.stateNumber>);
+        <endif>
+    false ->
+        antlr4_error_handler:report_match(State_<m.stateNumber>),
+        antlr4_parser:consume(State_<m.stateNumber>)
+end
+>>
+
+Wildcard(w) ::= <<
+State_<w.stateNumber> = antlr4_parser:set_state(State1, <w.stateNumber>),
+<if(w.labels)>
+<w.labels:{l | <l.escapedName>}; separator=", "> = antlr4_parser:match_wildcard(State_<w.stateNumber>)
+<else>
+antlr4_parser:match_wildcard(State_<w.stateNumber>)
+<endif>
+>>
+
+// ACTION STUFF
+
+Action(a, foo, chunks) ::= "<chunks>"
+
+ArgAction(a, chunks) ::= "<chunks>"
+
+SemPred(p, chunks, failChunks) ::= <<
+State_<p.stateNumber> = antlr4_parser:set_state(State1, <p.stateNumber>),
+case <chunks> of
+    true -> ok;
+    false ->
+        throw({failed_predicate, antlr4_failed_predicate_exception:new(State_<p.stateNumber>, <p.predicate><if(failChunks)>, <failChunks><elseif(p.msg)>, <p.msg><endif>)})
+end
+>>
+
+ExceptionClause(e, catchArg, catchAction) ::= <<
+catch
+    <catchArg> ->
+        <catchAction>
+>>
+
+// lexer actions are not associated with model objects
+
+LexerSkipCommand() ::= "antlr4_lexer:skip(LexerState)"
+LexerMoreCommand() ::= "antlr4_lexer:more(LexerState)"
+LexerPopModeCommand() ::= "antlr4_lexer:pop_mode(LexerState)"
+LexerTypeCommand(arg, grammar)     ::= "antlr4_lexer:set_type(LexerState, <arg>)"
+LexerChannelCommand(arg, grammar)  ::= "antlr4_lexer:set_channel(LexerState, <arg>)"
+LexerModeCommand(arg, grammar)     ::= "antlr4_lexer:set_mode(LexerState, <arg>)"
+LexerPushModeCommand(arg, grammar) ::= "antlr4_lexer:push_mode(LexerState, <arg>)"
+
+ActionText(t) ::= "<t.text>"
+ActionTemplate(t) ::= "<t.st>"
+
+ArgRef(a) ::= "<ctx(a)>#<a.ctx.escapedName>.<a.escapedName>"
+LocalRef(a) ::= "<a.escapedName>"
+RetValueRef(a) ::= "<ctx(a)>#<a.ctx.escapedName>.<a.escapedName>"
+QRetValueRef(a) ::= "<ctx(a)>#<a.ctx.escapedName>.<a.dict>.<a.escapedName>"
+
+/** How to translate $tokenLabel */
+TokenRef(t) ::= "<ctx(t)>#<t.ctx.escapedName>.<t.escapedName>"
+LabelRef(t) ::= "<ctx(t)>#<t.ctx.escapedName>.<t.escapedName>"
+ListLabelRef(t) ::= "<ctx(t)>#<t.ctx.escapedName>.<t.escapedName>"
+
+SetAttr(s, rhsChunks) ::= "<ctx(s)>#<s.ctx.escapedName>{<s.escapedName> = <rhsChunks>}"
+
+TokenLabelType() ::= "<file.TokenLabelType; null={antlr4_token:token()}>"
+InputSymbolType() ::= "<file.InputSymbolType; null={antlr4_token:token()}>"
+
+TokenPropertyRef_text(t) ::= "antlr4_token:get_text(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_type(t) ::= "antlr4_token:get_type(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_line(t) ::= "antlr4_token:get_line(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_pos(t) ::= "antlr4_token:get_char_position_in_line(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_channel(t) ::= "antlr4_token:get_channel(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_index(t) ::= "antlr4_token:get_token_index(<ctx(t)>#<t.ctx.escapedName>.<t.label>)"
+TokenPropertyRef_int(t) ::= "binary_to_integer(antlr4_token:get_text(<ctx(t)>#<t.ctx.escapedName>.<t.label>))"
+
+RulePropertyRef_start(r) ::= "antlr4_parser_rule_context:get_start(<ctx(r)>#<r.ctx.escapedName>.<r.label>)"
+RulePropertyRef_stop(r) ::= "antlr4_parser_rule_context:get_stop(<ctx(r)>#<r.ctx.escapedName>.<r.label>)"
+RulePropertyRef_text(r) ::= "antlr4_parser:get_text_from_context(<ctx(r)>#<r.ctx.escapedName>.<r.label>)"
+RulePropertyRef_ctx(r) ::= "<ctx(r)>#<r.ctx.escapedName>.<r.label>"
+RulePropertyRef_parser(r) ::= "State"
+
+ThisRulePropertyRef_start(r) ::= "antlr4_parser_rule_context:get_start(Ctx)"
+ThisRulePropertyRef_stop(r) ::= "antlr4_parser_rule_context:get_stop(Ctx)"
+ThisRulePropertyRef_text(r) ::= "antlr4_parser:get_text_from_context(Ctx)"
+ThisRulePropertyRef_ctx(r) ::= "Ctx"
+ThisRulePropertyRef_parser(r) ::= "State"
+
+NonLocalAttrRef(s) ::= "antlr4_parser:get_invoking_context(State, <s.ruleIndex>)#<s.ruleName>_context.<s.escapedName>"
+SetNonLocalAttr(s, rhsChunks) ::= "State#parser_state{ctx = antlr4_parser:get_invoking_context(State, <s.ruleIndex>)#<s.ruleName>_context{<s.escapedName> = <rhsChunks>}}"
+
+AddToLabelList(a) ::= "<ctx(a.label)>#<a.ctx.escapedName>{<a.listName> = [<labelref(a.label)> | <ctx(a.label)>#<a.ctx.escapedName>.<a.listName>]}"
+
+TokenDecl(t) ::= "<t.escapedName> :: <ErlangTypeMap.(TokenLabelType())>"
+TokenTypeDecl(t) ::= "<t.escapedName> :: integer()"
+TokenListDecl(t) ::= "<t.escapedName> :: [<TokenLabelType()>]"
+
+RuleContextDecl(r) ::= "<r.escapedName> :: #<r.ctxName>{}"
+RuleContextListDecl(rdecl) ::= "<rdecl.escapedName> :: [#<rdecl.ctxName>{}]"
+
+AttributeDecl(d) ::= "<d.escapedName> :: <ErlangTypeMap.(d.type)><if(d.initValue)> % = <d.initValue><endif>"
+
+ContextTokenGetterDecl(t) ::= <<
+get_<t.escapedName; format="lower">(#<struct.escapedName; format="lower">{} = Ctx) ->
+    antlr4_parser_rule_context:get_token(Ctx, ?<parser.name; format="upper">_<t.escapedName>, 0)
+>>
+
+ContextTokenListGetterDecl(t) ::= <<
+get_all_<t.escapedName; format="lower">(#<struct.escapedName; format="lower">{} = Ctx) ->
+    antlr4_parser_rule_context:get_tokens(Ctx, ?<parser.name; format="upper">_<t.escapedName>)
+>>
+
+ContextTokenListIndexedGetterDecl(t) ::= <<
+get_<t.escapedName; format="lower">(#<struct.escapedName; format="lower">{} = Ctx, I) ->
+    antlr4_parser_rule_context:get_token(Ctx, ?<parser.name; format="upper">_<t.escapedName>, I)
+>>
+
+ContextRuleGetterDecl(r) ::= <<
+get_<r.escapedName; format="lower">(#<struct.escapedName; format="lower">{children = Children} = _Ctx) ->
+    case [C || C \<- Children, is_record(C, <r.ctxName; format="lower">)] of
+        [First | _] -> First;
+        [] -> undefined
+    end
+>>
+
+ContextRuleListGetterDecl(r) ::= <<
+get_all_<r.escapedName; format="lower">(#<struct.escapedName; format="lower">{children = Children} = _Ctx) ->
+    [C || C \<- Children, is_record(C, <r.ctxName; format="lower">)]
+>>
+
+ContextRuleListIndexedGetterDecl(r) ::= <<
+get_<r.escapedName; format="lower">(#<struct.escapedName; format="lower">{children = Children} = _Ctx, I) ->
+    Matches = [C || C \<- Children, is_record(C, <r.ctxName; format="lower">)],
+    case I \< length(Matches) of
+        true -> lists:nth(I + 1, Matches);
+        false -> undefined
+    end
+>>
+
+LexerRuleContext() ::= "lexer_rule_context"
+
+/** The rule context name is the rule followed by a suffix; e.g.,
+ *  r becomes r_context.
+ */
+RuleContextNameSuffix() ::= "_context"
+
+ImplicitTokenLabel(tokenName) ::= "_<tokenName>"
+ImplicitRuleLabel(ruleName) ::= "_<ruleName>"
+ImplicitSetLabel(id) ::= "_tset<id>"
+ListLabelName(label) ::= "<label>"
+
+CaptureNextToken(d) ::= "<d.varName> = antlr4_token_stream:lt(antlr4_parser:get_input(State1), 1)"
+CaptureNextTokenType(d) ::= "<d.varName> = antlr4_token_stream:la(antlr4_parser:get_input(State1), 1)"
+
+StructDecl(struct, ctorAttrs, attrs, getters, dispatchMethods, interfaces, extensionMembers, signatures) ::= <<
+%% Context record: <struct.escapedName>
+-record(<struct.escapedName; format="lower">, {
+    parent :: term(),
+    invoking_state :: integer(),
+    rule_index = ?<parser.name; format="upper">_RULE_<struct.derivedFromName> :: integer(),
+    start_token :: antlr4_token:token(),
+    stop_token :: antlr4_token:token(),
+    exception :: term(),
+    children = [] :: [term()]<if(attrs)>,
+    <attrs:{a | <a>}; separator=",\n    "><endif>
+}).
+
+-type <struct.escapedName; format="lower">() :: #<struct.escapedName; format="lower">{}.
+-export_type([<struct.escapedName; format="lower">/0]).
+
+new_<struct.escapedName; format="lower">_context(Parent, InvokingState<struct.ctorAttrs:{a | , <a.escapedName>}>) ->
+    #<struct.escapedName; format="lower">{
+        parent = Parent,
+        invoking_state = InvokingState<struct.ctorAttrs:{a | ,
+        <a.escapedName> = <a.escapedName>}>
+    }.
+<if(getters)>
+
+<getters; separator="\n\n">
+<endif>
+<if(dispatchMethods)>
+
+<dispatchMethods; separator="\n\n">
+<endif>
+<if(extensionMembers)>
+
+<extensionMembers; separator="\n\n">
+<endif>
+>>
+
+AltLabelStructDecl(struct, attrs, getters, dispatchMethods, tokenDecls, tokenTypeDecls, tokenListDecls, ruleContextDecls, ruleContextListDecls, attributeDecls) ::= <<
+%% Alternative label context: <struct.escapedName>
+-record(<struct.escapedName; format="lower">, {
+    parent :: term(),
+    invoking_state :: integer(),
+    rule_index :: integer(),
+    start_token :: antlr4_token:token(),
+    stop_token :: antlr4_token:token(),
+    exception :: term(),
+    children = [] :: [term()]<if(attrs)>,
+    <attrs:{a | <a>}; separator=",\n    "><endif>
+}).
+
+-type <struct.escapedName; format="lower">() :: #<struct.escapedName; format="lower">{}.
+-export_type([<struct.escapedName; format="lower">/0]).
+
+new_<struct.escapedName; format="lower">_context(Parent, Ctx) ->
+    #<struct.escapedName; format="lower">{
+        parent = Parent,
+        invoking_state = Ctx#<currentRule.name; format="lower">_context.invoking_state,
+        rule_index = Ctx#<currentRule.name; format="lower">_context.rule_index,
+        start_token = Ctx#<currentRule.name; format="lower">_context.start_token,
+        stop_token = Ctx#<currentRule.name; format="lower">_context.stop_token,
+        children = Ctx#<currentRule.name; format="lower">_context.children
+    }.
+<if(getters)>
+
+<getters; separator="\n\n">
+<endif>
+<if(dispatchMethods)>
+
+<dispatchMethods; separator="\n\n">
+<endif>
+>>
+
+ListenerDispatchMethod(method) ::= <<
+<if(method.isEnter)>enter<else>exit<endif>_rule(Listener, #<struct.escapedName; format="lower">{} = Ctx) ->
+    case erlang:function_exported(Listener, <if(method.isEnter)>enter<else>exit<endif>_<struct.derivedFromName; format="lower">, 1) of
+        true -> Listener:<if(method.isEnter)>enter<else>exit<endif>_<struct.derivedFromName; format="lower">(Ctx);
+        false -> ok
+    end
+>>
+
+VisitorDispatchMethod(method) ::= <<
+accept(Visitor, #<struct.escapedName; format="lower">{} = Ctx) ->
+    case erlang:function_exported(Visitor, visit_<struct.derivedFromName; format="lower">, 1) of
+        true -> Visitor:visit_<struct.derivedFromName; format="lower">(Ctx);
+        false -> Visitor:visit_children(Ctx)
+    end
+>>
+
+/** If we don't know location of label def x, use this template */
+labelref(x) ::= "<x.escapedName>"
+
+/** For any action chunk, what is correctly-typed context struct ptr? */
+ctx(actionChunk) ::= "Ctx"
+
+// used for left-recursive rules
+recRuleAltPredicate(ruleName, opPrec) ::= "antlr4_parser:precpred(State, <opPrec>)"
+recRuleSetReturnAction(src, name) ::= "<name> = <src>#<src>_context.<name>"
+recRuleSetStopToken() ::= "Ctx2 = Ctx1#<currentRule.name; format=\"lower\">_context{stop_token = antlr4_token_stream:lt(antlr4_parser:get_input(State1), -1)}"
+
+recRuleAltStartAction(ruleName, ctxName, label, isListLabel) ::= <<
+Ctx1 = new_<ctxName; format="lower">_context(ParentCtx, ParentState),
+<if(label)>
+<if(isListLabel)>
+Ctx2 = Ctx1#<ctxName; format="lower">_context{<label> = [PrevCtx | Ctx1#<ctxName; format="lower">_context.<label>]},
+<else>
+Ctx2 = Ctx1#<ctxName; format="lower">_context{<label> = PrevCtx},
+<endif>
+<endif>
+State2 = antlr4_parser:push_new_recursion_context(State1, Ctx2, StartState, ?<parser.name; format="upper">_RULE_<ruleName>)
+>>
+
+recRuleLabeledAltStartAction(ruleName, currentAltLabel, label, isListLabel) ::= <<
+BaseCtx = new_<ruleName; format="lower">_context(ParentCtx, ParentState),
+Ctx1 = new_<currentAltLabel; format="lower">_context(BaseCtx),
+<if(label)>
+<if(isListLabel)>
+Ctx2 = Ctx1#<currentAltLabel; format="lower">_context{<label> = [PrevCtx | Ctx1#<currentAltLabel; format="lower">_context.<label>]},
+<else>
+Ctx2 = Ctx1#<currentAltLabel; format="lower">_context{<label> = PrevCtx},
+<endif>
+<endif>
+State2 = antlr4_parser:push_new_recursion_context(State1, Ctx2, StartState, ?<parser.name; format="upper">_RULE_<ruleName>)
+>>
+
+recRuleReplaceContext(ctxName) ::= <<
+Ctx1 = new_<ctxName; format="lower">_context(Ctx0),
+State2 = antlr4_parser:set_ctx(State1, Ctx1),
+PrevCtx = Ctx1
+>>
+
+recRuleSetPrevCtx() ::= <<
+case antlr4_parser:has_parse_listeners(State1) of
+    true -> antlr4_parser:trigger_exit_rule_event(State1);
+    false -> ok
+end,
+PrevCtx = Ctx1
+>>
+
+LexerFile(lexerFile, lexer, namedActions) ::= <<
+<fileHeader(lexerFile.grammarFileName, lexerFile.ANTLRVersion)>
+
+-module(<lexerFile.grammarName; format="lower">_lexer).
+
+-export([
+    new/1,
+    next_token/1,
+    get_all_tokens/1
+]).
+
+-include_lib("antlr4/include/antlr4_runtime.hrl").
+<if(namedActions.header)>
+
+<namedActions.header>
+<endif>
+
+<lexer>
+>>
+
+Lexer(lexer, atn, actionFuncs, sempredFuncs, superClass) ::= <<
+%% Lexer state record
+-record(lexer_state, {
+    input :: antlr4_input_stream:input_stream(),
+    token :: antlr4_token:token(),
+    token_start_char_index :: integer(),
+    token_start_line :: integer(),
+    token_start_char_position_in_line :: integer(),
+    channel :: integer(),
+    type :: integer(),
+    mode_stack = [] :: [integer()],
+    mode = 0 :: integer(),
+    text :: binary(),
+    atn :: antlr4_atn:atn(),
+    interpreter :: antlr4_lexer_atn_simulator:simulator(),
+    decision_to_dfa :: [antlr4_dfa:dfa()],
+    shared_context_cache :: antlr4_prediction_context:cache()
+}).
+
+%% Token type constants
+-define(<lexer.name; format="upper">_EOF, -1).
+<if(lexer.tokens)>
+<lexer.tokens:{k | -define(<lexer.name; format="upper">_<k>, <lexer.tokens.(k)>).}; separator="\n">
+<endif>
+
+%% Channel constants
+-define(<lexer.name; format="upper">_DEFAULT_TOKEN_CHANNEL, 0).
+-define(<lexer.name; format="upper">_HIDDEN, 1).
+<if(lexer.escapedChannels)>
+<lexer.escapedChannels:{c | -define(<lexer.name; format="upper">_<c>, <lexer.escapedChannels.(c)>).}; separator="\n">
+<endif>
+
+%% Mode constants
+-define(<lexer.name; format="upper">_DEFAULT_MODE, 0).
+<if(rest(lexer.escapedModeNames))>
+<rest(lexer.escapedModeNames):{m | -define(<lexer.name; format="upper">_<m>, <i>).}; separator="\n">
+<endif>
+
+%% Rule names
+-define(RULE_NAMES, [<lexer.ruleNames:{r | "<r>"}; separator=", ">]).
+
+%% Channel names
+-define(CHANNEL_NAMES, ["DEFAULT_TOKEN_CHANNEL", "HIDDEN"<if(lexer.channelNames)>, <lexer.channelNames:{c | "<c>"}; separator=", "><endif>]).
+
+%% Mode names
+-define(MODE_NAMES, [<lexer.escapedModeNames:{m | "<m>"}; separator=", ">]).
+
+%% Literal names
+-define(LITERAL_NAMES, [<lexer.literalNames; null="undefined", separator=", ">]).
+
+%% Symbolic names
+-define(SYMBOLIC_NAMES, [<lexer.symbolicNames; null="undefined", separator=", ">]).
+
+%% Serialized ATN
+-define(SERIALIZED_ATN, <atn>).
+
+%% Create a new lexer
+new(Input) ->
+    ATN = antlr4_atn_deserializer:deserialize(?SERIALIZED_ATN),
+    DecisionToDFA = antlr4_atn:create_decision_to_dfa(ATN),
+    SharedContextCache = antlr4_prediction_context:new_cache(),
+    Interpreter = antlr4_lexer_atn_simulator:new(ATN, DecisionToDFA, SharedContextCache),
+    #lexer_state{
+        input = Input,
+        atn = ATN,
+        interpreter = Interpreter,
+        decision_to_dfa = DecisionToDFA,
+        shared_context_cache = SharedContextCache,
+        channel = ?<lexer.name; format="upper">_DEFAULT_TOKEN_CHANNEL,
+        type = 0,
+        mode = ?<lexer.name; format="upper">_DEFAULT_MODE
+    }.
+
+%% Get next token
+next_token(#lexer_state{} = State) ->
+    antlr4_lexer:next_token(State).
+
+%% Get all tokens
+get_all_tokens(#lexer_state{} = State) ->
+    get_all_tokens(State, []).
+
+get_all_tokens(State, Acc) ->
+    {Token, State1} = next_token(State),
+    case antlr4_token:get_type(Token) of
+        ?<lexer.name; format="upper">_EOF ->
+            lists:reverse([Token | Acc]);
+        _ ->
+            get_all_tokens(State1, [Token | Acc])
+    end.
+<if(namedActions.members)>
+
+<namedActions.members>
+<endif>
+
+<if(actionFuncs)>
+
+action(LocalCtx, RuleIndex, ActionIndex, LexerState) ->
+    case RuleIndex of
+        <lexer.actionFuncs.values:{f | <f.ruleIndex> ->
+            '<f.name>_action'(LocalCtx, ActionIndex, LexerState)}; separator=";\n        ">
+    end.
+
+<actionFuncs.values; separator="\n\n">
+<endif>
+
+<if(sempredFuncs)>
+
+sempred(LocalCtx, RuleIndex, PredIndex, LexerState) ->
+    case RuleIndex of
+        <lexer.sempredFuncs.values:{f | <f.ruleIndex> ->
+            '<f.name>_sempred'(LocalCtx, PredIndex, LexerState)}; separator=";\n        ">
+    end.
+
+<sempredFuncs.values; separator="\n\n">
+<endif>
+>>
+
+RuleActionFunction(r, actions) ::= <<
+'<r.escapedName>_action'(_LocalCtx, ActionIndex, LexerState) ->
+    case ActionIndex of
+        <actions:{index | <index> ->
+            <actions.(index)>}; separator=";\n        ">;
+        _ ->
+            throw({no_registered_action, ActionIndex})
+    end.
+>>
+
+RuleSempredFunction(r, actions) ::= <<
+'<r.escapedName>_sempred'(_LocalCtx, PredIndex, _LexerState) ->
+    case PredIndex of
+        <actions:{index | <index> ->
+            <actions.(index)>}; separator=";\n        ">;
+        _ ->
+            throw({no_predicate_with_index, PredIndex})
+    end.
+>>
+
+SerializedATN(model) ::= <<
+<if(model.serialized)>[
+    <model.serialized; separator=", ", wrap>
+]<endif>
+>>
+
+/** Using a type to init value map, try to init a type; if not in table
+ *  must be an object, default value is "undefined".
+ */
+initValue(typeName) ::= <<
+<erlangTypeInitMap.(typeName)>
+>>
+
+erlangTypeInitMap ::= [
+    "integer":"0",
+    "float":"0.0",
+    "boolean":"false",
+    "binary":"<<>>",
+    default:"undefined"
+]
+
+codeFileExtension() ::= ".erl"
