@@ -1,0 +1,15 @@
+{application, antlr4, [
+    {description, "ANTLR4 Runtime for Erlang"},
+    {vsn, "4.13.2"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["BSD-3-Clause"]},
+    {links, [
+        {"GitHub", "https://github.com/antlr/antlr4"}
+    ]}
+]}.
