@@ -1,6 +1,6 @@
 %% Code generated from Hello.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
--module(hellolexer_lexer).
+-module(hello_lexer).
 
 -export([
     new/1,
@@ -9,24 +9,6 @@
 ]).
 
 -include_lib("antlr4/include/antlr4_runtime.hrl").
-%% Lexer state record
--record(lexer_state, {
-    input :: antlr4_input_stream:input_stream(),
-    token :: antlr4_token:token(),
-    token_start_char_index :: integer(),
-    token_start_line :: integer(),
-    token_start_char_position_in_line :: integer(),
-    channel :: integer(),
-    type :: integer(),
-    mode_stack = [] :: [integer()],
-    mode = 0 :: integer(),
-    text :: binary(),
-    atn :: antlr4_atn:atn(),
-    interpreter :: antlr4_lexer_atn_simulator:simulator(),
-    decision_to_dfa :: [antlr4_dfa:dfa()],
-    shared_context_cache :: antlr4_prediction_context:cache()
-}).
-
 %% Token type constants
 -define(HELLOLEXER_EOF, -1).
 -define(HELLOLEXER_T__0, 1).
@@ -75,30 +57,35 @@ new(Input) ->
     DecisionToDFA = antlr4_atn:create_decision_to_dfa(ATN),
     SharedContextCache = antlr4_prediction_context:new_cache(),
     Interpreter = antlr4_lexer_atn_simulator:new(ATN, DecisionToDFA, SharedContextCache),
-    #lexer_state{
-        input = Input,
-        atn = ATN,
-        interpreter = Interpreter,
-        decision_to_dfa = DecisionToDFA,
-        shared_context_cache = SharedContextCache,
-        channel = ?HELLOLEXER_DEFAULT_TOKEN_CHANNEL,
-        type = 0,
-        mode = ?HELLOLEXER_DEFAULT_MODE
+    #{
+        input => Input,
+        atn => ATN,
+        interpreter => Interpreter,
+        decision_to_dfa => DecisionToDFA,
+        shared_context_cache => SharedContextCache,
+        channel => ?HELLOLEXER_DEFAULT_TOKEN_CHANNEL,
+        type => 0,
+        mode => ?HELLOLEXER_DEFAULT_MODE,
+        mode_stack => [],
+        token_start_char_index => -1,
+        token_start_line => 1,
+        token_start_char_position_in_line => 0,
+        text => undefined
     }.
 
 %% Get next token
-next_token(#lexer_state{} = State) ->
+next_token(State) ->
     antlr4_lexer:next_token(State).
 
 %% Get all tokens
-get_all_tokens(#lexer_state{} = State) ->
+get_all_tokens(State) ->
     get_all_tokens(State, []).
 
 get_all_tokens(State, Acc) ->
     {Token, State1} = next_token(State),
     case antlr4_token:get_type(Token) of
         ?HELLOLEXER_EOF ->
-            lists:reverse([Token | Acc]);
+            {lists:reverse([Token | Acc]), State1};
         _ ->
             get_all_tokens(State1, [Token | Acc])
     end.
