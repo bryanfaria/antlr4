@@ -1,10 +1,35 @@
 %% ANTLR4 Parser Module
 %% Base parser functionality
+%% Supports both explicit state-passing (2+ arg functions) and
+%% process-dictionary-based API (0/1 arg functions used by generated code).
 
 -module(antlr4_parser).
 
 -include("antlr4_runtime.hrl").
 
+%% Process-dictionary-based API (used by generated code)
+-export([
+    init/1,
+    get_state/0,
+    enter_rule/1,
+    exit_rule/0,
+    enter_outer_alt/1,
+    set_state/1,
+    match/1,
+    match_wildcard/0,
+    precpred/1,
+    enter_recursion_rule/2,
+    enter_recursion_rule/3,
+    push_new_recursion_context/3,
+    unroll_recursion_contexts/1,
+    handle_rule_exception/1,
+    get_ctx/0,
+    set_ctx/1,
+    consume/0,
+    get_precedence/0
+]).
+
+%% Explicit state-passing API
 -export([
     new/2,
     get_input/1,
@@ -57,6 +82,8 @@
     reset/1
 ]).
 
+-define(PARSER_STATE_KEY, antlr4_parser_state).
+
 -record(parser_state, {
     input :: antlr4_token_stream:token_stream(),
     ctx :: term(),
@@ -71,11 +98,173 @@
     shared_context_cache :: term(),
     rule_names = [] :: [binary()],
     token_names = [] :: [binary()],
-    exception :: term()
+    exception :: term(),
+    precedence_stack = [0] :: [integer()]
 }).
 
 -type parser_state() :: #parser_state{}.
 -export_type([parser_state/0]).
+
+%% ===================================================================
+%% Process-dictionary-based API (used by generated code)
+%% ===================================================================
+
+%% @doc Initialize parser from a map state (generated code calls this)
+init(MapState) when is_map(MapState) ->
+    ATN = maps:get(atn, MapState),
+    DecisionToDFA = maps:get(decision_to_dfa, MapState),
+    SharedContextCache = maps:get(shared_context_cache, MapState),
+    Interpreter = antlr4_parser_atn_simulator:new(ATN, DecisionToDFA, SharedContextCache),
+    State = #parser_state{
+        input = maps:get(input, MapState),
+        ctx = maps:get(ctx, MapState, undefined),
+        error_handler = maps:get(error_handler, MapState, antlr4_default_error_strategy),
+        error_listeners = maps:get(error_listeners, MapState, []),
+        parse_listeners = maps:get(parse_listeners, MapState, []),
+        build_parse_trees = maps:get(build_parse_trees, MapState, true),
+        state_number = maps:get(state_number, MapState, -1),
+        atn = ATN,
+        interpreter = Interpreter,
+        decision_to_dfa = DecisionToDFA,
+        shared_context_cache = SharedContextCache,
+        rule_names = maps:get(rule_names, MapState, []),
+        token_names = maps:get(token_names, MapState, []),
+        exception = maps:get(exception, MapState, undefined),
+        precedence_stack = [0]
+    },
+    put(?PARSER_STATE_KEY, State),
+    ok.
+
+%% @doc Get current parser state from process dictionary
+get_state() ->
+    get(?PARSER_STATE_KEY).
+
+%% @doc Enter a rule (process-dict version). Creates a new context and returns it.
+enter_rule(RuleIndex) ->
+    State = get(?PARSER_STATE_KEY),
+    Ctx = #parser_rule_context{
+        rule_index = RuleIndex,
+        parent = State#parser_state.ctx
+    },
+    State1 = enter_rule(State, Ctx, RuleIndex),
+    put(?PARSER_STATE_KEY, State1),
+    State1#parser_state.ctx.
+
+%% @doc Exit a rule (process-dict version)
+exit_rule() ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = exit_rule(State),
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Enter an outer alternative (process-dict version)
+enter_outer_alt(AltNum) ->
+    State = get(?PARSER_STATE_KEY),
+    Ctx = State#parser_state.ctx,
+    State1 = enter_outer_alt(State, Ctx, AltNum),
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Set ATN state number (process-dict version)
+set_state(StateNum) when is_integer(StateNum) ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = State#parser_state{state_number = StateNum},
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Match a token (process-dict version). Returns the matched token.
+match(TokenType) when is_integer(TokenType) ->
+    State = get(?PARSER_STATE_KEY),
+    {Token, State1} = match(State, TokenType),
+    put(?PARSER_STATE_KEY, State1),
+    Token.
+
+%% @doc Match wildcard (process-dict version). Returns the matched token.
+match_wildcard() ->
+    State = get(?PARSER_STATE_KEY),
+    {Token, State1} = match_wildcard(State),
+    put(?PARSER_STATE_KEY, State1),
+    Token.
+
+%% @doc Consume current token (process-dict version)
+consume() ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = consume(State),
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Check precedence predicate (process-dict version)
+precpred(Precedence) ->
+    State = get(?PARSER_STATE_KEY),
+    precpred(State, Precedence).
+
+%% @doc Enter recursion rule (process-dict version, 2-arg)
+enter_recursion_rule(RuleIndex, Precedence) ->
+    State = get(?PARSER_STATE_KEY),
+    Ctx = #parser_rule_context{
+        rule_index = RuleIndex,
+        parent = State#parser_state.ctx
+    },
+    State1 = enter_recursion_rule(State, Ctx, RuleIndex, Precedence),
+    put(?PARSER_STATE_KEY, State1),
+    State1#parser_state.ctx.
+
+%% @doc Enter recursion rule (process-dict version, 3-arg with state number)
+enter_recursion_rule(RuleIndex, StateNum, Precedence) ->
+    State = get(?PARSER_STATE_KEY),
+    Ctx = #parser_rule_context{
+        rule_index = RuleIndex,
+        parent = State#parser_state.ctx
+    },
+    State1 = State#parser_state{state_number = StateNum},
+    State2 = enter_recursion_rule(State1, Ctx, RuleIndex, Precedence),
+    put(?PARSER_STATE_KEY, State2),
+    State2#parser_state.ctx.
+
+%% @doc Push new recursion context (process-dict version)
+push_new_recursion_context(Ctx, StartState, RuleIndex) ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = push_new_recursion_context(State, Ctx, StartState, RuleIndex),
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Unroll recursion contexts (process-dict version)
+unroll_recursion_contexts(ParentCtx) ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = unroll_recursion_contexts(State, ParentCtx),
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Handle rule exception (process-dict version)
+handle_rule_exception(Reason) ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = State#parser_state{exception = Reason},
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Get current context (process-dict version)
+get_ctx() ->
+    State = get(?PARSER_STATE_KEY),
+    State#parser_state.ctx.
+
+%% @doc Set current context (process-dict version)
+set_ctx(Ctx) ->
+    State = get(?PARSER_STATE_KEY),
+    State1 = State#parser_state{ctx = Ctx},
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Get current precedence level (process-dict version)
+get_precedence() ->
+    State = get(?PARSER_STATE_KEY),
+    case State#parser_state.precedence_stack of
+        [] -> -1;
+        [Top | _] -> Top
+    end.
+
+%% ===================================================================
+%% Explicit state-passing API
+%% ===================================================================
 
 %% @doc Create a new parser
 -spec new(antlr4_token_stream:token_stream(), term()) -> parser_state().
@@ -89,7 +278,8 @@ new(Input, ATN) ->
         atn = ATN,
         interpreter = Interpreter,
         decision_to_dfa = DecisionToDFA,
-        shared_context_cache = SharedContextCache
+        shared_context_cache = SharedContextCache,
+        precedence_stack = [0]
     }.
 
 %% @doc Get the input token stream
@@ -200,11 +390,20 @@ enter_outer_alt(State, Ctx, AltNum) ->
     Ctx1 = antlr4_parser_rule_context:set_alt_number(Ctx, AltNum),
     State#parser_state{ctx = Ctx1}.
 
-%% @doc Enter a recursion rule
+%% @doc Enter a recursion rule (with precedence stack management)
 -spec enter_recursion_rule(parser_state(), term(), integer(), integer()) -> parser_state().
-enter_recursion_rule(State, Ctx, RuleIndex, _Precedence) ->
-    State1 = State#parser_state{ctx = Ctx},
-    enter_rule(State1, Ctx, RuleIndex).
+enter_recursion_rule(State, Ctx, _RuleIndex, Precedence) ->
+    %% Push precedence onto the stack
+    State1 = State#parser_state{
+        precedence_stack = [Precedence | State#parser_state.precedence_stack],
+        ctx = Ctx
+    },
+    %% Set start token
+    Token = antlr4_token_stream:lt(State1#parser_state.input, 1),
+    Ctx1 = antlr4_parser_rule_context:set_start(Ctx, Token),
+    State2 = State1#parser_state{ctx = Ctx1},
+    %% Notify listeners
+    trigger_enter_rule_event(State2).
 
 %% @doc Push a new recursion context
 -spec push_new_recursion_context(parser_state(), term(), integer(), integer()) -> parser_state().
@@ -212,12 +411,19 @@ push_new_recursion_context(#parser_state{ctx = ParentCtx} = State, Ctx, StartSta
     Ctx1 = antlr4_parser_rule_context:set_parent(Ctx, ParentCtx),
     State#parser_state{ctx = Ctx1, state_number = StartState}.
 
-%% @doc Unroll recursion contexts
+%% @doc Unroll recursion contexts (with precedence stack pop)
 -spec unroll_recursion_contexts(parser_state(), term()) -> parser_state().
-unroll_recursion_contexts(#parser_state{ctx = Ctx, input = Input} = State, ParentCtx) ->
+unroll_recursion_contexts(#parser_state{ctx = Ctx, input = Input,
+                                         precedence_stack = PrecStack} = State, ParentCtx) ->
+    %% Pop precedence from stack
+    RestStack = case PrecStack of
+        [_ | Rest] -> Rest;
+        [] -> []
+    end,
+    State1 = State#parser_state{precedence_stack = RestStack},
     %% Set stop token on all contexts back to parent
     Token = antlr4_token_stream:lt(Input, -1),
-    unroll_contexts(State, Ctx, ParentCtx, Token).
+    unroll_contexts(State1, Ctx, ParentCtx, Token).
 
 unroll_contexts(State, Ctx, ParentCtx, _Token) when Ctx =:= ParentCtx ->
     State#parser_state{ctx = ParentCtx};
@@ -244,7 +450,7 @@ get_state_number(#parser_state{state_number = StateNum}) ->
 
 %% @doc Set the state number
 -spec set_state(parser_state(), integer()) -> parser_state().
-set_state(State, StateNum) ->
+set_state(State, StateNum) when is_record(State, parser_state) ->
     State#parser_state{state_number = StateNum}.
 
 %% @doc Get the ATN
@@ -277,10 +483,12 @@ get_exception(#parser_state{exception = Exception}) ->
 set_exception(State, Exception) ->
     State#parser_state{exception = Exception}.
 
-%% @doc Check if current rule can take a precedence
+%% @doc Check if current rule can take a precedence (uses precedence stack)
 -spec precpred(parser_state(), integer()) -> boolean().
-precpred(_State, _Precedence) ->
-    true.
+precpred(#parser_state{precedence_stack = []}, _Precedence) ->
+    true;
+precpred(#parser_state{precedence_stack = [Top | _]}, Precedence) ->
+    Precedence >= Top.
 
 %% @doc Check if there are parse listeners
 -spec has_parse_listeners(parser_state()) -> boolean().
@@ -351,9 +559,7 @@ get_text_from_context(#parser_state{input = Input}, Ctx) ->
 
 %% @doc Check if a token type is expected
 -spec is_expected_token(parser_state(), integer()) -> boolean().
-is_expected_token(#parser_state{interpreter = _Interpreter, ctx = _Ctx, atn = _ATN}, _TokenType) ->
-    %% This would involve computing the expected tokens from the ATN
-    %% Simplified implementation
+is_expected_token(#parser_state{}, _TokenType) ->
     true.
 
 %% @doc Get expected tokens at current position
@@ -363,8 +569,7 @@ get_expected_tokens(State) ->
 
 %% @doc Get expected tokens within current rule
 -spec get_expected_tokens_within_current_rule(parser_state()) -> term().
-get_expected_tokens_within_current_rule(#parser_state{atn = _ATN, state_number = _StateNum}) ->
-    %% This would compute follow sets from the ATN
+get_expected_tokens_within_current_rule(#parser_state{}) ->
     antlr4_interval_set:new().
 
 %% @doc Get the rule invocation stack
@@ -437,5 +642,6 @@ reset(#parser_state{input = Input} = State) ->
         input = Input1,
         ctx = undefined,
         state_number = -1,
-        exception = undefined
+        exception = undefined,
+        precedence_stack = [0]
     }.

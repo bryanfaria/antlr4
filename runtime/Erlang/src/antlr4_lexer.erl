@@ -49,16 +49,21 @@
 -type lexer_state() :: #lexer_state{}.
 -export_type([lexer_state/0]).
 
-%% @doc Get the next token from the lexer
--spec next_token(lexer_state()) -> {antlr4_token:token(), lexer_state()}.
+%% @doc Get the next token from the lexer.
+%% Accepts either a #lexer_state{} record or a map (from generated code).
+next_token(State) when is_map(State) ->
+    LexerState = map_to_lexer_state(State),
+    {Token, NewLexerState} = next_token(LexerState),
+    {Token, lexer_state_to_map(NewLexerState, State)};
 next_token(#lexer_state{hit_eof = true} = State) ->
     %% Return EOF token if we've already hit EOF
     EofToken = create_eof_token(State),
     {EofToken, State};
-next_token(State) ->
+next_token(#lexer_state{} = State) ->
     State1 = State#lexer_state{
         token = undefined,
         channel = ?ANTLR4_TOKEN_DEFAULT_CHANNEL,
+        type = ?ANTLR4_TOKEN_INVALID_TYPE,
         token_start_char_index = antlr4_input_stream:get_index(State#lexer_state.input),
         token_start_char_position_in_line = antlr4_input_stream:get_char_position_in_line(State#lexer_state.input),
         token_start_line = antlr4_input_stream:get_line(State#lexer_state.input),
@@ -77,28 +82,59 @@ next_token_loop(#lexer_state{input = Input} = State) ->
                 State1 = match_token(State),
                 case State1#lexer_state.token of
                     undefined ->
-                        %% No token emitted, skip was called, try again
-                        next_token_loop(State1);
+                        %% No token emitted (skip was called), reset and try again
+                        State2 = State1#lexer_state{
+                            token = undefined,
+                            channel = ?ANTLR4_TOKEN_DEFAULT_CHANNEL,
+                            type = ?ANTLR4_TOKEN_INVALID_TYPE,
+                            token_start_char_index = antlr4_input_stream:get_index(State1#lexer_state.input),
+                            token_start_char_position_in_line = antlr4_input_stream:get_char_position_in_line(State1#lexer_state.input),
+                            token_start_line = antlr4_input_stream:get_line(State1#lexer_state.input),
+                            text = undefined
+                        },
+                        next_token_loop(State2);
                     Token ->
                         {Token, State1}
                 end
             catch
-                throw:{lexer_no_viable_alt, State2} ->
+                throw:{lexer_no_viable_alt, _SimState} ->
                     %% Recovery: skip one character and try again
-                    recover(State2)
+                    recover(State)
             end
     end.
 
-%% @doc Match a token using the ATN
+%% @doc Match a token using the ATN, then execute accumulated lexer actions
 match_token(#lexer_state{interpreter = Interpreter, input = Input, mode = Mode} = State) ->
-    TokenType = antlr4_lexer_atn_simulator:match(Interpreter, Input, Mode),
+    {TokenType, LexerActions} = antlr4_lexer_atn_simulator:match(Interpreter, Input, Mode),
     State1 = State#lexer_state{type = TokenType},
-    case State1#lexer_state.token of
-        undefined when TokenType =/= ?ANTLR4_TOKEN_INVALID_TYPE ->
-            emit(State1);
+    %% Execute accumulated lexer actions (channel, skip, type, mode changes)
+    State2 = execute_lexer_actions(LexerActions, State1),
+    case State2#lexer_state.token of
+        undefined when State2#lexer_state.type =/= ?ANTLR4_TOKEN_INVALID_TYPE ->
+            emit(State2);
         _ ->
-            State1
+            State2
     end.
+
+%% @doc Execute accumulated lexer actions from the ATN match
+execute_lexer_actions([], State) ->
+    State;
+execute_lexer_actions([#lexer_action{action_type = channel, data = Ch} | Rest], State) ->
+    execute_lexer_actions(Rest, set_channel(State, Ch));
+execute_lexer_actions([#lexer_action{action_type = skip} | Rest], State) ->
+    execute_lexer_actions(Rest, skip(State));
+execute_lexer_actions([#lexer_action{action_type = type, data = T} | Rest], State) ->
+    execute_lexer_actions(Rest, set_type(State, T));
+execute_lexer_actions([#lexer_action{action_type = push_mode, data = M} | Rest], State) ->
+    execute_lexer_actions(Rest, push_mode(State, M));
+execute_lexer_actions([#lexer_action{action_type = pop_mode} | Rest], State) ->
+    execute_lexer_actions(Rest, pop_mode(State));
+execute_lexer_actions([#lexer_action{action_type = mode, data = M} | Rest], State) ->
+    execute_lexer_actions(Rest, set_mode(State, M));
+execute_lexer_actions([#lexer_action{action_type = more} | Rest], State) ->
+    execute_lexer_actions(Rest, more(State));
+execute_lexer_actions([_ | Rest], State) ->
+    execute_lexer_actions(Rest, State).
 
 %% @doc Recover from a lexer error
 recover(#lexer_state{input = Input} = State) ->
@@ -230,6 +266,47 @@ reset(#lexer_state{input = Input} = State) ->
         mode = 0,
         mode_stack = [],
         text = undefined
+    }.
+
+%% Internal: convert a map state (from generated code) to a #lexer_state{} record
+map_to_lexer_state(Map) ->
+    #lexer_state{
+        input = maps:get(input, Map),
+        token = maps:get(token, Map, undefined),
+        token_start_char_index = maps:get(token_start_char_index, Map, -1),
+        token_start_line = maps:get(token_start_line, Map, 1),
+        token_start_char_position_in_line = maps:get(token_start_char_position_in_line, Map, 0),
+        hit_eof = maps:get(hit_eof, Map, false),
+        channel = maps:get(channel, Map, ?ANTLR4_TOKEN_DEFAULT_CHANNEL),
+        type = maps:get(type, Map, ?ANTLR4_TOKEN_INVALID_TYPE),
+        mode_stack = maps:get(mode_stack, Map, []),
+        mode = maps:get(mode, Map, 0),
+        text = maps:get(text, Map, undefined),
+        atn = maps:get(atn, Map, undefined),
+        interpreter = maps:get(interpreter, Map, undefined),
+        decision_to_dfa = maps:get(decision_to_dfa, Map, undefined),
+        shared_context_cache = maps:get(shared_context_cache, Map, undefined)
+    }.
+
+%% Internal: convert a #lexer_state{} record back to a map.
+%% Preserves any extra keys from the original map.
+lexer_state_to_map(#lexer_state{} = State, OriginalMap) ->
+    OriginalMap#{
+        input => State#lexer_state.input,
+        token => State#lexer_state.token,
+        token_start_char_index => State#lexer_state.token_start_char_index,
+        token_start_line => State#lexer_state.token_start_line,
+        token_start_char_position_in_line => State#lexer_state.token_start_char_position_in_line,
+        hit_eof => State#lexer_state.hit_eof,
+        channel => State#lexer_state.channel,
+        type => State#lexer_state.type,
+        mode_stack => State#lexer_state.mode_stack,
+        mode => State#lexer_state.mode,
+        text => State#lexer_state.text,
+        atn => State#lexer_state.atn,
+        interpreter => State#lexer_state.interpreter,
+        decision_to_dfa => State#lexer_state.decision_to_dfa,
+        shared_context_cache => State#lexer_state.shared_context_cache
     }.
 
 %% Internal: create a token from the current state

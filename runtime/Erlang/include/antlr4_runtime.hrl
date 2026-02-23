@@ -141,7 +141,24 @@
     transition_type :: integer(),
     target :: #atn_state{},
     label :: term(),
-    is_epsilon = false :: boolean()
+    is_epsilon = false :: boolean(),
+    action_index :: integer() | undefined
+}).
+
+%% Lexer action types
+-define(LEXER_ACTION_CHANNEL, channel).
+-define(LEXER_ACTION_CUSTOM, custom).
+-define(LEXER_ACTION_MODE, mode).
+-define(LEXER_ACTION_MORE, more).
+-define(LEXER_ACTION_POP_MODE, pop_mode).
+-define(LEXER_ACTION_PUSH_MODE, push_mode).
+-define(LEXER_ACTION_SKIP, skip).
+-define(LEXER_ACTION_TYPE, type).
+
+%% Lexer action record
+-record(lexer_action, {
+    action_type :: atom(),
+    data :: term()
 }).
 
 %% DFA record
@@ -161,7 +178,8 @@
     is_accept_state = false :: boolean(),
     prediction :: integer(),
     requires_full_context = false :: boolean(),
-    predicates :: [term()]
+    predicates :: [term()],
+    lexer_action_executor :: [#lexer_action{}] | undefined
 }).
 
 %% Interval record
@@ -213,7 +231,8 @@
     context :: #prediction_context{},
     semantic_context :: #semantic_context{} | undefined,
     reaches_into_outer_context = 0 :: integer(),
-    precedence_filter_suppressed = false :: boolean()
+    precedence_filter_suppressed = false :: boolean(),
+    lexer_actions = [] :: [#lexer_action{}]
 }).
 
 %% ATN Config Set record
@@ -226,22 +245,6 @@
     full_ctx = false :: boolean(),
     read_only = false :: boolean(),
     cached_hash_code :: integer()
-}).
-
-%% Lexer action types
--define(LEXER_ACTION_CHANNEL, channel).
--define(LEXER_ACTION_CUSTOM, custom).
--define(LEXER_ACTION_MODE, mode).
--define(LEXER_ACTION_MORE, more).
--define(LEXER_ACTION_POP_MODE, pop_mode).
--define(LEXER_ACTION_PUSH_MODE, push_mode).
--define(LEXER_ACTION_SKIP, skip).
--define(LEXER_ACTION_TYPE, type).
-
-%% Lexer action record
--record(lexer_action, {
-    action_type :: atom(),
-    data :: term()
 }).
 
 %% Recognition exception types

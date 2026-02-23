@@ -34,7 +34,8 @@
     line :: integer(),
     char_position_in_line :: integer(),
     dfa_state :: antlr4_dfa_state:dfa_state() | undefined,
-    prev_accept :: {integer(), antlr4_dfa_state:dfa_state(), integer()} | undefined
+    %% {TokenType, LexerActions, DFAState, StopIndex}
+    prev_accept :: {integer(), [#lexer_action{}], term(), integer()} | undefined
 }).
 
 %% @doc Create a new lexer ATN simulator
@@ -52,8 +53,11 @@ new(ATN, DecisionToDFA, SharedContextCache) ->
         prev_accept = undefined
     }.
 
-%% @doc Match input starting at the current position
--spec match(lexer_simulator(), antlr4_input_stream:input_stream(), integer()) -> integer().
+%% @doc Match input starting at the current position.
+%% Returns {TokenType, LexerActions} where LexerActions is a list of
+%% #lexer_action{} records accumulated during the match.
+-spec match(lexer_simulator(), antlr4_input_stream:input_stream(), integer()) ->
+    {integer(), [#lexer_action{}]}.
 match(Simulator, Input, Mode) ->
     ATN = Simulator#lexer_simulator.atn,
     DecisionToDFA = Simulator#lexer_simulator.decision_to_dfa,
@@ -118,49 +122,104 @@ get_dfa(_, _) ->
 match_atn(Simulator, SimState, StartState, _DFA) ->
     ATN = Simulator#lexer_simulator.atn,
 
-    %% Initialize with start state configurations
-    Reach = compute_start_state(StartState),
+    %% Initialize with start state configurations (with epsilon closure)
+    Reach = compute_start_state(StartState, ATN),
+
+    %% Check for immediate accept at start
+    SimState1 = SimState#sim_state{
+        prev_accept = check_accept(Reach, SimState, ATN)
+    },
 
     %% Simulate the ATN
-    {TokenType, _NewSimState} = atn_loop(Simulator, SimState, Reach, ATN),
+    Result = atn_loop(Simulator, SimState1, Reach, ATN),
 
-    case TokenType of
-        ?ANTLR4_TOKEN_INVALID_TYPE ->
+    case Result of
+        {?ANTLR4_TOKEN_INVALID_TYPE, _Actions} ->
             throw({lexer_no_viable_alt, SimState});
-        _ ->
-            TokenType
+        {TokenType, Actions} ->
+            {TokenType, Actions}
     end.
 
 %% Internal: execute DFA-based matching
 exec_dfa(Simulator, SimState, S0, DFA) ->
     %% Simulate the DFA
-    {TokenType, _NewSimState} = dfa_loop(Simulator, SimState, S0, DFA),
+    Result = dfa_loop(Simulator, SimState, S0, DFA),
 
-    case TokenType of
-        ?ANTLR4_TOKEN_INVALID_TYPE ->
+    case Result of
+        {?ANTLR4_TOKEN_INVALID_TYPE, _Actions} ->
             %% DFA couldn't match, try ATN
             StartState = antlr4_dfa:get_atn_start_state(DFA),
             match_atn(Simulator, SimState, StartState, DFA);
-        _ ->
-            TokenType
+        {TokenType, Actions} ->
+            {TokenType, Actions}
     end.
 
-%% Internal: compute start state configurations
-compute_start_state(StartState) ->
-    %% Create initial configs from start state
+%% Internal: compute start state configurations with epsilon closure
+compute_start_state(StartState, ATN) ->
+    %% Create initial configs from start state transitions
     Transitions = StartState#atn_state.transitions,
-    Configs = lists:map(
-        fun(#atn_transition{target = Target}) ->
+    InitialConfigs = lists:map(
+        fun({Index, #atn_transition{target = Target}}) ->
             #atn_config{
                 state = Target,
-                alt = 0,
+                alt = Index + 1,
                 context = #prediction_context{context_type = ?PREDICTION_CONTEXT_EMPTY},
-                semantic_context = undefined
+                semantic_context = undefined,
+                lexer_actions = []
             }
         end,
-        Transitions
+        lists:zip(lists:seq(0, length(Transitions) - 1), Transitions)
     ),
-    #atn_config_set{configs = Configs}.
+    %% Apply epsilon closure to all initial configs
+    ClosedConfigs = epsilon_closure(InitialConfigs, ATN),
+    #atn_config_set{configs = ClosedConfigs}.
+
+%% Internal: epsilon closure - follow all epsilon transitions without consuming input
+%% Accumulates lexer actions when traversing ACTION transitions
+epsilon_closure(Configs, ATN) ->
+    epsilon_closure_loop(Configs, ATN, #{}, []).
+
+epsilon_closure_loop([], _ATN, _Visited, Acc) ->
+    lists:reverse(Acc);
+epsilon_closure_loop([#atn_config{state = State} = Config | Rest], ATN, Visited, Acc) ->
+    Key = {State#atn_state.state_number, Config#atn_config.alt},
+    case maps:is_key(Key, Visited) of
+        true ->
+            epsilon_closure_loop(Rest, ATN, Visited, Acc);
+        false ->
+            Visited1 = maps:put(Key, true, Visited),
+            %% Find epsilon transitions from this state
+            EpsilonTargets = lists:filtermap(
+                fun(#atn_transition{is_epsilon = true, transition_type = Type,
+                                    target = Target, action_index = AI}) ->
+                    NewConfig = case Type of
+                        ?ATN_TRANSITION_ACTION when AI =/= undefined ->
+                            LexerActions = ATN#atn.lexer_actions,
+                            Action = case AI < length(LexerActions) of
+                                true -> lists:nth(AI + 1, LexerActions);
+                                false -> undefined
+                            end,
+                            case Action of
+                                undefined ->
+                                    Config#atn_config{state = Target};
+                                _ ->
+                                    Config#atn_config{
+                                        state = Target,
+                                        lexer_actions = Config#atn_config.lexer_actions ++ [Action]
+                                    }
+                            end;
+                        _ ->
+                            Config#atn_config{state = Target}
+                    end,
+                    {true, NewConfig};
+                   (#atn_transition{is_epsilon = false}) ->
+                    false
+                end,
+                State#atn_state.transitions
+            ),
+            %% Add current config to result and continue with epsilon targets
+            epsilon_closure_loop(EpsilonTargets ++ Rest, ATN, Visited1, [Config | Acc])
+    end.
 
 %% Internal: ATN simulation loop
 atn_loop(Simulator, SimState, ConfigSet, ATN) ->
@@ -172,33 +231,27 @@ atn_loop(Simulator, SimState, ConfigSet, ATN) ->
     case CurrentChar of
         ?ANTLR4_TOKEN_EOF ->
             %% End of input
-            finalize_match(SimState, PrevAccept);
+            finalize_match(PrevAccept);
         _ ->
-            %% Compute next state
-            case get_existing_target_state(ConfigSet, CurrentChar, ATN) of
-                undefined ->
-                    %% Need to compute target
-                    case compute_target_state(ConfigSet, CurrentChar, ATN) of
-                        #atn_config_set{configs = []} ->
-                            %% No valid transitions
-                            finalize_match(SimState, PrevAccept);
-                        NewConfigSet ->
-                            %% Check if this is an accept state
-                            NewPrevAccept = check_accept(NewConfigSet, SimState),
-                            Input1 = antlr4_input_stream:consume(Input),
-                            SimState1 = SimState#sim_state{
-                                input = Input1,
-                                prev_accept = NewPrevAccept
-                            },
-                            atn_loop(Simulator, SimState1, NewConfigSet, ATN)
-                    end;
-                NewConfigSet ->
-                    %% Have existing target
-                    NewPrevAccept = check_accept(NewConfigSet, SimState),
+            %% Compute next state (only character-matching transitions + epsilon closure)
+            NewConfigSet = compute_target_state(ConfigSet, CurrentChar, ATN),
+            case NewConfigSet of
+                #atn_config_set{configs = []} ->
+                    %% No valid transitions
+                    finalize_match(PrevAccept);
+                _ ->
+                    %% Consume the character
                     Input1 = antlr4_input_stream:consume(Input),
+                    %% Check if this is an accept state
+                    NewPrevAccept = check_accept(NewConfigSet, SimState, ATN),
+                    %% Use best accept found so far
+                    BestAccept = case NewPrevAccept of
+                        undefined -> PrevAccept;
+                        _ -> NewPrevAccept
+                    end,
                     SimState1 = SimState#sim_state{
                         input = Input1,
-                        prev_accept = NewPrevAccept
+                        prev_accept = BestAccept
                     },
                     atn_loop(Simulator, SimState1, NewConfigSet, ATN)
             end
@@ -213,7 +266,11 @@ dfa_loop(Simulator, SimState, DFAState, DFA) ->
         true ->
             Prediction = antlr4_dfa_state:get_prediction(DFAState),
             StopIndex = antlr4_input_stream:get_index(Input),
-            {Prediction, DFAState, StopIndex};
+            Actions = case DFAState of
+                #dfa_state{lexer_action_executor = LAE} when is_list(LAE) -> LAE;
+                _ -> []
+            end,
+            {Prediction, Actions, DFAState, StopIndex};
         false ->
             PrevAccept
     end,
@@ -223,13 +280,13 @@ dfa_loop(Simulator, SimState, DFAState, DFA) ->
 
     case CurrentChar of
         ?ANTLR4_TOKEN_EOF ->
-            finalize_match(SimState#sim_state{prev_accept = NewPrevAccept}, NewPrevAccept);
+            finalize_match(NewPrevAccept);
         _ ->
             %% Look up the edge
             case antlr4_dfa_state:get_edge(DFAState, CurrentChar) of
                 undefined ->
                     %% No edge, return what we have
-                    finalize_match(SimState#sim_state{prev_accept = NewPrevAccept}, NewPrevAccept);
+                    finalize_match(NewPrevAccept);
                 TargetState ->
                     Input1 = antlr4_input_stream:consume(Input),
                     SimState1 = SimState#sim_state{
@@ -240,15 +297,16 @@ dfa_loop(Simulator, SimState, DFAState, DFA) ->
             end
     end.
 
-%% Internal: finalize the match
-finalize_match(_SimState, undefined) ->
-    {?ANTLR4_TOKEN_INVALID_TYPE, undefined};
-finalize_match(SimState, {TokenType, _DFAState, _StopIndex}) ->
-    {TokenType, SimState}.
+%% Internal: finalize the match - return {TokenType, LexerActions}
+finalize_match(undefined) ->
+    {?ANTLR4_TOKEN_INVALID_TYPE, []};
+finalize_match({TokenType, Actions, _DFAState, _StopIndex}) ->
+    {TokenType, Actions}.
 
-%% Internal: check if config set represents an accept state
-check_accept(#atn_config_set{configs = Configs}, SimState) ->
-    #sim_state{input = Input, prev_accept = PrevAccept} = SimState,
+%% Internal: check if config set contains an accept state (rule stop state)
+%% Returns {TokenType, LexerActions, undefined, StopIndex} or undefined
+check_accept(#atn_config_set{configs = Configs}, SimState, _ATN) ->
+    #sim_state{input = Input} = SimState,
     StopIndex = antlr4_input_stream:get_index(Input),
 
     %% Find accepting configs (those in rule stop states)
@@ -257,37 +315,44 @@ check_accept(#atn_config_set{configs = Configs}, SimState) ->
 
     case AcceptConfigs of
         [] ->
-            PrevAccept;
-        [#atn_config{alt = Alt} | _] ->
-            {Alt, undefined, StopIndex}
+            undefined;
+        [#atn_config{state = AcceptState, lexer_actions = Actions} | _] ->
+            %% Token type is rule_index + 1 (rule indices are 0-based,
+            %% token types start at 1 for user tokens)
+            TokenType = AcceptState#atn_state.rule_index + 1,
+            {TokenType, Actions, undefined, StopIndex}
     end.
 
-%% Internal: get existing target state (placeholder)
-get_existing_target_state(_ConfigSet, _Char, _ATN) ->
-    undefined.
-
-%% Internal: compute target state
+%% Internal: compute target state - follow character-matching transitions
+%% then apply epsilon closure
 compute_target_state(#atn_config_set{configs = Configs}, Char, ATN) ->
-    NewConfigs = lists:flatmap(
+    %% Get configs reachable by character-matching transitions only
+    ReachedConfigs = lists:flatmap(
         fun(Config) ->
-            get_reachable_configs(Config, Char, ATN)
+            get_reachable_configs(Config, Char)
         end,
         Configs
     ),
-    #atn_config_set{configs = NewConfigs}.
+    %% Apply epsilon closure to reached configs
+    ClosedConfigs = epsilon_closure(ReachedConfigs, ATN),
+    #atn_config_set{configs = ClosedConfigs}.
 
 %% Internal: get reachable configurations from a config on input char
-get_reachable_configs(#atn_config{state = State} = Config, Char, _ATN) ->
+%% Only follows non-epsilon (character-matching) transitions
+get_reachable_configs(#atn_config{state = State} = Config, Char) ->
     Transitions = State#atn_state.transitions,
     lists:filtermap(
-        fun(Transition) ->
-            case matches_transition(Transition, Char) of
-                true ->
-                    #atn_transition{target = Target} = Transition,
-                    {true, Config#atn_config{state = Target}};
-                false ->
-                    false
-            end
+        fun(#atn_transition{is_epsilon = true}) ->
+                %% Skip epsilon transitions - handled by epsilon_closure
+                false;
+           (Transition) ->
+                case matches_transition(Transition, Char) of
+                    true ->
+                        #atn_transition{target = Target} = Transition,
+                        {true, Config#atn_config{state = Target}};
+                    false ->
+                        false
+                end
         end,
         Transitions
     ).
@@ -295,7 +360,8 @@ get_reachable_configs(#atn_config{state = State} = Config, Char, _ATN) ->
 %% Internal: check if a transition matches the current character
 matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_ATOM, label = Label}, Char) ->
     Label =:= Char;
-matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_RANGE, label = #interval{start_index = A, stop_index = B}}, Char) ->
+matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_RANGE,
+                                    label = #interval{start_index = A, stop_index = B}}, Char) ->
     Char >= A andalso Char =< B;
 matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_SET, label = Set}, Char) ->
     antlr4_interval_set:contains(Set, Char);
@@ -303,7 +369,5 @@ matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_NOT_SET, la
     not antlr4_interval_set:contains(Set, Char);
 matches_transition(#atn_transition{transition_type = ?ATN_TRANSITION_WILDCARD}, Char) ->
     Char =/= ?ANTLR4_TOKEN_EOF;
-matches_transition(#atn_transition{is_epsilon = true}, _Char) ->
-    true;
 matches_transition(_, _) ->
     false.
