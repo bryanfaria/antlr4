@@ -10,9 +10,50 @@ No semantic predicates, no embedded actions, no lexer modes, no alt labels, no r
 
 ---
 
-## What Exists Today
+## Current Status
 
-### Code Generation (Tool Side)
+### What Works End-to-End
+
+The `Hello.g4` grammar (`r: 'hello' ID EOF; WS: [ \t\r\n]+ -> skip;`) works fully:
+1. ANTLR tool generates `hello_parser.erl` and `hello_lexer.erl`
+2. Runtime compiles cleanly with `rebar3 compile`
+3. Lexer correctly tokenizes input, including `-> skip` actions (whitespace is consumed but no token emitted)
+4. Parser correctly matches token sequences via process-dictionary-based API
+5. All three e2e tests pass (basic lexing, skip action, parser)
+
+### Recently Fixed Bugs
+
+#### Bug 1: Lexer Actions Not Executed — FIXED
+
+The ATN simulator now properly accumulates lexer actions during epsilon closure and returns them alongside the token type. The lexer executes them after matching (`channel`, `skip`, `type`, `mode`, `pushMode`, `popMode`, `more`).
+
+**Root causes found and fixed:**
+- ATN deserializer was completely wrong for format v4 (reading non-existent UUID, missing LOOP_END/BlockStartState extra ints, wrong rules format)
+- ACTION transitions stored `Arg1` (ruleIndex) as action_index instead of `Arg2` (actionIndex)
+- Epsilon transitions (ACTION, RULE, PREDICATE, PRECEDENCE) were not marked as epsilon
+- Epsilon closure was missing entirely — epsilon transitions were being treated as character-matching transitions
+- Erlang immutability caused stale state references: transition targets were copies from before transitions were added. Fixed with a `StateMap` lookup that resolves every target through the canonical state list
+- The ATN simulator consumed input during matching but never returned the updated input stream (lost due to Erlang immutability). Fixed by returning `{TokenType, LexerActions, NewInput}`
+- Accept state capture happened before consume (should be after, matching Java's order)
+
+#### Bug 2: Precedence Predicate Stubbed — FIXED
+
+`precpred/2` now compares `Precedence >= Top` using a precedence stack. `enter_recursion_rule` pushes, `unroll_recursion_contexts` pops. **Not yet tested with a left-recursive grammar** — needs verification with Athena SQL or a simpler expression grammar.
+
+#### Bug 3: Case-Insensitive Lexing — No Runtime Changes Needed
+
+Confirmed: case-insensitive support is handled entirely at the ATN construction level by `LexerATNFactory`. The serialized ATN already contains both-case ranges. No target-specific or runtime code needed.
+
+#### Additional Fix: API Mismatch Between Generated Code and Runtime
+
+The generated code uses **maps + process dictionary** while the runtime used **records + functional state passing**. Fixed by adding:
+- `antlr4_lexer:next_token/1` — accepts maps, converts to records internally, converts back on return
+- `antlr4_parser:init/1` — accepts maps or records, stores parser state in process dictionary
+- Process-dictionary-based 0/1-arg wrapper functions in parser (`enter_rule/1`, `match/1`, `set_state/1`, etc.)
+
+---
+
+## Code Generation (Tool Side)
 
 | Component | Location | Lines | Status |
 |-----------|----------|-------|--------|
@@ -21,19 +62,23 @@ No semantic predicates, no embedded actions, no lexer modes, no alt labels, no r
 
 The code generator produces valid `.erl` modules. Token constants are emitted as `-define` macros. The serialized ATN is embedded as an integer list. Rule functions, loop constructs, and decision blocks all generate syntactically correct Erlang.
 
-### Runtime Library (`runtime/Erlang/`)
+**Known issue**: Generated parser does not export rule functions (e.g. `'r'/0`, `'r'/1`). These must be added manually to `-export([...])` for the parser to be callable from other modules.
+
+---
+
+## Runtime Library (`runtime/Erlang/`)
 
 | Module | Lines | Status |
 |--------|-------|--------|
 | `antlr4_input_stream.erl` | 165 | **Complete** — lookahead, seeking, position tracking |
 | `antlr4_token.erl` | 158 | **Complete** — token representation, all accessors |
 | `antlr4_token_stream.erl` | 316 | **Complete** — buffered stream, channel filtering, lookahead |
-| `antlr4_lexer.erl` | 274 | **Mostly complete** — token emission, mode stack, `skip/1` and `set_channel/2` exist but are never called |
-| `antlr4_lexer_atn_simulator.erl` | 309 | **Gap** — ATN simulation works, but lexer actions are never executed |
-| `antlr4_parser.erl` | 441 | **Gap** — core parsing works, but `precpred/2` is stubbed (always returns `true`) |
+| `antlr4_lexer.erl` | 351 | **Complete** — map/record bridge, token emission, mode stack, lexer action execution |
+| `antlr4_lexer_atn_simulator.erl` | 412 | **Complete** — epsilon closure, action accumulation, state map resolution, input threading |
+| `antlr4_parser.erl` | 650 | **Complete** — dual API (explicit + process-dict), precedence stack, recursion rule support |
 | `antlr4_parser_atn_simulator.erl` | 270 | **Mostly complete** — adaptive prediction, DFA caching, closure computation |
 | `antlr4_atn.erl` | 194 | **Complete** — ATN structure and state management |
-| `antlr4_atn_deserializer.erl` | 240 | **Complete** — full deserialization including lexer actions |
+| `antlr4_atn_deserializer.erl` | 363 | **Complete** — format v4 deserialization, state refresh for Erlang immutability |
 | `antlr4_dfa.erl` | 143 | **Complete** — DFA state collection |
 | `antlr4_dfa_state.erl` | 142 | **Complete** — individual DFA states with edges |
 | `antlr4_parse_tree.erl` | 108 | **Complete** — terminal/error nodes, accept/visitor |
@@ -43,13 +88,15 @@ The code generator produces valid `.erl` modules. Token constants are emitted as
 | `antlr4_interval_set.erl` | 206 | **Complete** — set operations for token ranges |
 | `antlr4_default_error_strategy.erl` | 237 | **Mostly complete** — single-token insertion/deletion recovery |
 | `antlr4_error_listener.erl` | 54 | **Complete** — simple listener interface |
-| `antlr4_runtime.hrl` | 281 | **Complete** — all record definitions, constants, type macros |
+| `antlr4_runtime.hrl` | 283 | **Complete** — all record definitions, constants, type macros |
 
 **Build system**: `rebar.config` with proper profiles, `antlr4.app.src` with OTP metadata. No external dependencies.
 
-**Total runtime**: ~3,850 lines of Erlang.
+**Total runtime**: ~4,650 lines of Erlang.
 
-### Test Infrastructure
+---
+
+## Test Infrastructure
 
 | Component | Location | Status |
 |-----------|----------|--------|
@@ -57,75 +104,27 @@ The code generator produces valid `.erl` modules. Token constants are emitted as
 | `ErlangRuntimeTests.java` | `runtime-testsuite/.../erlang/` | 17 lines — test entry point |
 | Erlang test template (`.test.stg`) | — | **Missing** — cannot run ANTLR's standard runtime test suite |
 | `test_erlang/Hello.g4` | `test_erlang/` | Simple example grammar with generated output |
-
-### What Works End-to-End
-
-A simple grammar like `Hello.g4` (`r: 'hello' ID EOF;`) can be:
-1. Fed to ANTLR tool to generate `hello_parser.erl` and `hello_lexer.erl`
-2. Compiled alongside the runtime
-3. Used to lex and parse simple input (no channels, no left recursion, no actions)
+| `test_erlang/e2e_test.erl` | `test_erlang/` | 3 passing tests: basic lexing, skip action, parser e2e |
 
 ---
 
-## What Must Be Fixed for Athena SQL
+## What Remains for Athena SQL
 
-### Bug 1: Lexer Actions Not Executed (CRITICAL)
+### Must Verify
 
-**Problem**: The Athena lexer uses `-> channel(HIDDEN)` on `WS` and `LINE_COMMENT` rules. The ATN deserializer correctly reads lexer action records, but `antlr4_lexer_atn_simulator.erl` never executes them. Whitespace tokens are emitted on the default channel, which causes every parser rule to fail.
+1. **`-> channel(HIDDEN)` action**: The `skip` action is tested and works. The `channel` action uses the same code path (accumulated during epsilon closure, executed after match). Should work but needs testing with a grammar that uses `-> channel(HIDDEN)`.
 
-**Where the fix goes**:
-- `antlr4_lexer_atn_simulator.erl` — after accepting a token, check if the matched rule has associated lexer actions. If so, execute them (channel, skip, type, mode, pushMode, popMode).
-- The lexer action records are already deserialized into `#lexer_action{}` records by `antlr4_atn_deserializer.erl`.
-- `antlr4_lexer.erl` already has `set_channel/2`, `skip/1`, `set_type/2`, `push_mode/2`, `pop_mode/1` — they just need to be called.
+2. **Precedence predicates with left-recursive rules**: The precedence stack is implemented (`enter_recursion_rule` pushes, `unroll_recursion_contexts` pops, `precpred` compares). Needs testing with an expression grammar like `expr: expr '*' expr | expr '+' expr | INT;`.
 
-**Reference**: See how the Java runtime does it in `LexerATNSimulator.java` → `execATN()` → calls `lexerAction.execute(lexer)` after accepting.
+3. **Case-insensitive lexing**: Confirmed no runtime changes needed. Should verify by generating from `AthenaLexer.g4` and checking that keywords match case-insensitively.
 
-### Bug 2: Precedence Predicate Stubbed (CRITICAL)
+4. **Generated parser exports**: The code generator template (`Erlang.stg`) needs to export rule functions. Currently only `new/1` is exported.
 
-**Problem**: The Athena parser has two left-recursive rules:
-```
-boolean_expression
-    : boolean_expression AND boolean_expression
-    | boolean_expression OR boolean_expression
-    | NOT* ('(' boolean_expression ')' | pred)
-    ;
+### Likely Issues with Larger Grammars
 
-expression
-    : primitive_expression
-    | '(' expression ')'
-    | expression op = (STAR | DIVIDE | MODULE) expression
-    | expression op = (PLUS | MINUS) expression
-    | expression DOT expression
-    | ...
-    ;
-```
-
-ANTLR rewrites these into precedence-climbing loops. The generated code calls `antlr4_parser:precpred(Precedence)`, but the current implementation always returns `true`:
-
-```erlang
-precpred(_State, _Precedence) ->
-    true.
-```
-
-This means operator precedence is ignored — `1 + 2 * 3` would parse incorrectly.
-
-**Where the fix goes**:
-- `antlr4_parser.erl` — `precpred/2` must compare the given precedence against the current precedence level stored when `enter_recursion_rule` was called.
-- `enter_recursion_rule` must store the precedence level in the parser state (it currently ignores the `_Precedence` parameter).
-- `push_new_recursion_context` and `unroll_recursion_contexts` are present but may need review to ensure the precedence stack is maintained correctly.
-
-**Reference**: See `Parser.java` → `precpred(RuleContext, int)` which calls `_ctx.precedence >= precedence`.
-
-### Bug 3: Case-Insensitive Lexing Not Supported (CRITICAL)
-
-**Problem**: The Athena lexer declares `options { caseInsensitive = true; }`. This means keywords like `SELECT`, `select`, and `Select` must all match. This option affects how the ATN is built — character transitions should match both cases.
-
-**Where the fix goes**: This is handled at the **tool level**, not the runtime. ANTLR's `LexerATNFactory` generates case-insensitive transitions when this option is set. Need to verify:
-1. Does `ErlangTarget.java` need to opt into this? Check if other targets do anything special.
-2. Does the ATN serialization preserve case-insensitive ranges correctly?
-3. Test: generate code from `AthenaLexer.g4` and inspect whether the serialized ATN contains both-case character ranges.
-
-**Likely outcome**: This may already work if the ATN factory handles it language-independently. Needs verification.
+- **Parser ATN simulator**: The adaptive prediction (`antlr4_parser_atn_simulator.erl`) has not been tested with complex grammars. It may have similar stale-state-reference issues as the lexer ATN simulator had.
+- **Error recovery**: `antlr4_default_error_strategy.erl` has basic single-token insertion/deletion but may not handle all error scenarios in complex grammars.
+- **Performance**: Lists are used throughout (e.g., `lists:nth/2` for state lookup). For large ATNs this could be slow. Consider converting to maps or arrays if performance is an issue.
 
 ---
 
@@ -135,12 +134,11 @@ These features are absent from the Athena grammar and can be deferred:
 
 - Semantic predicates (`{...}?`) — not used
 - Embedded actions (`{...}`) — not used
-- Lexer modes (`mode`, `pushMode`, `popMode`) — not used
+- Lexer modes (`mode`, `pushMode`, `popMode`) — not used (but runtime support exists)
 - Alt labels (`# labelName`) — not used
 - Rule `returns` / `locals` — not used
 - Visitor tree traversal — not needed for parsing
-- `-> skip` — not used (Athena uses `channel(HIDDEN)` instead)
-- `-> type(...)` — not used
+- `-> type(...)` — not used (but runtime support exists)
 
 ---
 
@@ -170,9 +168,9 @@ LexerState = athena_lexer:new(Input),
 
 ### Step 4: Test parsing
 ```erlang
-TokenStream = antlr4_token_stream:new(Tokens),
-ParserState = athena_parser:new(TokenStream),
-Tree = athena_parser:query(ParserState),
+TokenStream = antlr4_token_stream:new(LexerState),
+athena_parser:new(TokenStream),
+Tree = athena_parser:query(),
 %% Verify: parse tree correctly represents SELECT 1 FROM foo
 ```
 
@@ -204,4 +202,5 @@ runtime-testsuite/
 test_erlang/
   Hello.g4                                              # Example grammar
   hello_parser.erl, hello_lexer.erl, ...                # Generated output
+  e2e_test.erl                                          # Runtime integration tests
 ```
