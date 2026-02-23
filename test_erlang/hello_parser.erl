@@ -3,7 +3,9 @@
 -module(hello_parser).
 
 -export([
-    new/1]).
+    new/1,
+    'r'/0,
+    'r'/1]).
 
 -include_lib("antlr4/include/antlr4_runtime.hrl").
 

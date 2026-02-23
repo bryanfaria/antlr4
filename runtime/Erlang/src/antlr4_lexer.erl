@@ -105,8 +105,8 @@ next_token_loop(#lexer_state{input = Input} = State) ->
 
 %% @doc Match a token using the ATN, then execute accumulated lexer actions
 match_token(#lexer_state{interpreter = Interpreter, input = Input, mode = Mode} = State) ->
-    {TokenType, LexerActions} = antlr4_lexer_atn_simulator:match(Interpreter, Input, Mode),
-    State1 = State#lexer_state{type = TokenType},
+    {TokenType, LexerActions, NewInput} = antlr4_lexer_atn_simulator:match(Interpreter, Input, Mode),
+    State1 = State#lexer_state{type = TokenType, input = NewInput},
     %% Execute accumulated lexer actions (channel, skip, type, mode changes)
     State2 = execute_lexer_actions(LexerActions, State1),
     case State2#lexer_state.token of

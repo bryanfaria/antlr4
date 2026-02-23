@@ -109,7 +109,10 @@
 %% Process-dictionary-based API (used by generated code)
 %% ===================================================================
 
-%% @doc Initialize parser from a map state (generated code calls this)
+%% @doc Initialize parser from a map or record state (generated code calls this)
+init(#parser_state{} = State) ->
+    put(?PARSER_STATE_KEY, State),
+    ok;
 init(MapState) when is_map(MapState) ->
     ATN = maps:get(atn, MapState),
     DecisionToDFA = maps:get(decision_to_dfa, MapState),
