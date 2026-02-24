@@ -20,13 +20,24 @@
     precpred/1,
     enter_recursion_rule/2,
     enter_recursion_rule/3,
+    push_new_recursion_context/1,
     push_new_recursion_context/3,
     unroll_recursion_contexts/1,
     handle_rule_exception/1,
     get_ctx/0,
     set_ctx/1,
     consume/0,
-    get_precedence/0
+    get_precedence/0,
+    %% Additional process-dict wrappers used by generated code
+    sync/0,
+    la/1,
+    lt/1,
+    adaptive_predict/1,
+    trigger_exit_if_listeners/0,
+    set_stop_token/1,
+    report_match/0,
+    recover_inline/0,
+    get_state_number/0
 ]).
 
 %% Explicit state-passing API
@@ -264,6 +275,89 @@ get_precedence() ->
         [] -> -1;
         [Top | _] -> Top
     end.
+
+%% @doc Sync the parser (process-dict version). Currently a no-op.
+sync() ->
+    ok.
+
+%% @doc Lookahead token type (process-dict version). Returns type of token at offset K.
+la(K) ->
+    Token = lt(K),
+    antlr4_token:get_type(Token).
+
+%% @doc Lookahead token (process-dict version). Returns token at offset K.
+lt(K) ->
+    State = get(?PARSER_STATE_KEY),
+    antlr4_token_stream:lt(State#parser_state.input, K).
+
+%% @doc Adaptive prediction (process-dict version). Returns the predicted alternative.
+adaptive_predict(Decision) ->
+    State = get(?PARSER_STATE_KEY),
+    antlr4_parser_atn_simulator:adaptive_predict(
+        State#parser_state.interpreter,
+        State#parser_state.input,
+        Decision,
+        State#parser_state.ctx
+    ).
+
+%% @doc Trigger exit if listeners exist (process-dict version)
+trigger_exit_if_listeners() ->
+    State = get(?PARSER_STATE_KEY),
+    case State#parser_state.parse_listeners of
+        [] -> ok;
+        _Listeners ->
+            State1 = trigger_exit_rule_event(State),
+            put(?PARSER_STATE_KEY, State1),
+            ok
+    end.
+
+%% @doc Push new recursion context (process-dict version, 1-arg)
+%% Creates a new context for the current rule and makes it the current context.
+push_new_recursion_context(RuleIndex) ->
+    State = get(?PARSER_STATE_KEY),
+    ParentCtx = State#parser_state.ctx,
+    NewCtx = #parser_rule_context{
+        rule_index = RuleIndex,
+        parent = ParentCtx,
+        invoking_state = State#parser_state.state_number,
+        start_token = case ParentCtx of
+            undefined -> undefined;
+            _ -> antlr4_parser_rule_context:get_start(ParentCtx)
+        end
+    },
+    State1 = State#parser_state{ctx = NewCtx},
+    put(?PARSER_STATE_KEY, State1),
+    ok.
+
+%% @doc Set stop token on current context (process-dict version)
+set_stop_token(Token) ->
+    State = get(?PARSER_STATE_KEY),
+    Ctx = State#parser_state.ctx,
+    case Ctx of
+        undefined -> ok;
+        _ ->
+            Ctx1 = antlr4_parser_rule_context:set_stop(Ctx, Token),
+            State1 = State#parser_state{ctx = Ctx1},
+            put(?PARSER_STATE_KEY, State1),
+            ok
+    end.
+
+%% @doc Report a successful match (process-dict version). Currently a no-op.
+report_match() ->
+    ok.
+
+%% @doc Recover from an inline error (process-dict version).
+%% Delegates to the error handler.
+recover_inline() ->
+    State = get(?PARSER_STATE_KEY),
+    ErrorHandler = State#parser_state.error_handler,
+    RecoveredToken = ErrorHandler:recover_inline(State),
+    RecoveredToken.
+
+%% @doc Get current state number (process-dict version)
+get_state_number() ->
+    State = get(?PARSER_STATE_KEY),
+    State#parser_state.state_number.
 
 %% ===================================================================
 %% Explicit state-passing API

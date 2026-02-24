@@ -1,5 +1,6 @@
 %% ANTLR4 Parser ATN Simulator
 %% Simulates the ATN for parser prediction
+%% Uses a StateMap to resolve stale state references (same pattern as lexer simulator)
 
 -module(antlr4_parser_atn_simulator).
 
@@ -36,21 +37,25 @@ new(ATN, DecisionToDFA, SharedContextCache) ->
 adaptive_predict(Simulator, TokenStream, Decision, OuterContext) ->
     #parser_simulator{atn = ATN, decision_to_dfa = DFAs} = Simulator,
 
+    %% Build state lookup map for resolving stale state references
+    StateMap = build_state_map(ATN),
+
     %% Get DFA for this decision
     DFA = lists:nth(Decision + 1, DFAs),
 
     %% Get start state for this decision
-    DecisionState = antlr4_atn:get_decision_state(ATN, Decision),
+    DecisionState0 = antlr4_atn:get_decision_state(ATN, Decision),
+    DecisionState = resolve_state(DecisionState0, StateMap),
 
     %% Try DFA first
     S0 = antlr4_dfa:get_s0(DFA),
     case S0 of
         undefined ->
             %% Need to build DFA from ATN
-            atn_predict(Simulator, TokenStream, Decision, DecisionState, OuterContext, DFA);
+            atn_predict(Simulator, TokenStream, Decision, DecisionState, OuterContext, DFA, StateMap);
         _ ->
             %% Use existing DFA
-            dfa_predict(Simulator, TokenStream, S0, DFA, OuterContext)
+            dfa_predict(Simulator, TokenStream, S0, DFA, OuterContext, StateMap)
     end.
 
 %% @doc Reset the simulator
@@ -71,93 +76,93 @@ get_dfa(#parser_simulator{decision_to_dfa = DFAs}, Decision) when Decision < len
 get_dfa(_, _) ->
     undefined.
 
-%% Internal: DFA-based prediction
-dfa_predict(Simulator, TokenStream, S0, DFA, OuterContext) ->
-    %% Get current input position
-    TokenIndex = antlr4_token_stream:get_index(TokenStream),
-    dfa_predict_loop(Simulator, TokenStream, S0, DFA, OuterContext, TokenIndex).
+%% Build a map from state_number -> state for resolving stale references
+build_state_map(ATN) ->
+    maps:from_list(
+        [{S#atn_state.state_number, S} || S <- ATN#atn.states]
+    ).
 
-dfa_predict_loop(Simulator, TokenStream, DFAState, DFA, OuterContext, StartIndex) ->
-    %% Check if this is an accept state
+%% Resolve a potentially stale state reference through the state map
+resolve_state(#atn_state{state_number = Num}, StateMap) ->
+    maps:get(Num, StateMap);
+resolve_state(undefined, _StateMap) ->
+    undefined.
+
+%% Internal: DFA-based prediction
+dfa_predict(Simulator, TokenStream, S0, DFA, OuterContext, StateMap) ->
+    TokenIndex = antlr4_token_stream:get_index(TokenStream),
+    dfa_predict_loop(Simulator, TokenStream, S0, DFA, OuterContext, TokenIndex, StateMap).
+
+dfa_predict_loop(Simulator, TokenStream, DFAState, DFA, OuterContext, StartIndex, StateMap) ->
     case antlr4_dfa_state:is_accept_state(DFAState) of
         true ->
             antlr4_dfa_state:get_prediction(DFAState);
         false ->
-            %% Get current input symbol
             Token = antlr4_token_stream:lt(TokenStream, 1),
             TokenType = antlr4_token:get_type(Token),
 
             case TokenType of
                 ?ANTLR4_TOKEN_EOF ->
-                    %% End of input with no accept state - error
                     ?ANTLR4_ATN_INVALID_ALT_NUMBER;
                 _ ->
-                    %% Look up edge
                     case antlr4_dfa_state:get_edge(DFAState, TokenType) of
                         undefined ->
-                            %% Need to expand from ATN
-                            DecisionState = antlr4_dfa:get_atn_start_state(DFA),
-                            atn_predict(Simulator, TokenStream, antlr4_dfa:get_decision(DFA), DecisionState, OuterContext, DFA);
+                            DecisionState0 = antlr4_dfa:get_atn_start_state(DFA),
+                            DecisionState = resolve_state(DecisionState0, StateMap),
+                            atn_predict(Simulator, TokenStream, antlr4_dfa:get_decision(DFA),
+                                       DecisionState, OuterContext, DFA, StateMap);
                         TargetState ->
-                            %% Consume token and continue
                             TokenStream1 = antlr4_token_stream:consume(TokenStream),
-                            dfa_predict_loop(Simulator, TokenStream1, TargetState, DFA, OuterContext, StartIndex)
+                            dfa_predict_loop(Simulator, TokenStream1, TargetState, DFA, OuterContext, StartIndex, StateMap)
                     end
             end
     end.
 
 %% Internal: ATN-based prediction
-atn_predict(Simulator, TokenStream, _Decision, DecisionState, OuterContext, DFA) ->
+atn_predict(Simulator, TokenStream, _Decision, DecisionState, OuterContext, DFA, StateMap) ->
     ATN = Simulator#parser_simulator.atn,
 
-    %% Compute start state
-    StartState = compute_start_state(ATN, DecisionState, OuterContext),
+    %% Compute start state with closure
+    StartState = compute_start_state(ATN, DecisionState, OuterContext, StateMap),
 
     %% Save initial token index
     StartIndex = antlr4_token_stream:get_index(TokenStream),
 
     %% Simulate ATN
-    atn_predict_loop(Simulator, TokenStream, StartState, ATN, DFA, OuterContext, StartIndex).
+    atn_predict_loop(Simulator, TokenStream, StartState, ATN, DFA, OuterContext, StartIndex, StateMap).
 
-atn_predict_loop(Simulator, TokenStream, ConfigSet, ATN, DFA, OuterContext, StartIndex) ->
-    %% Check for conflict or unique alt
+atn_predict_loop(Simulator, TokenStream, ConfigSet, ATN, DFA, OuterContext, StartIndex, StateMap) ->
     case get_unique_alt(ConfigSet) of
         Alt when Alt =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER ->
-            %% Unique alt found
             Alt;
         _ ->
-            %% Need to continue simulation
             Token = antlr4_token_stream:lt(TokenStream, 1),
             TokenType = antlr4_token:get_type(Token),
 
             case TokenType of
                 ?ANTLR4_TOKEN_EOF ->
-                    %% End of input - resolve conflict or report error
                     resolve_to_min_alt(ConfigSet);
                 _ ->
-                    %% Compute next state
-                    NewConfigSet = compute_reach_set(ConfigSet, TokenType, ATN),
+                    NewConfigSet = compute_reach_set(ConfigSet, TokenType, ATN, StateMap),
                     case NewConfigSet of
                         #atn_config_set{configs = []} ->
-                            %% No valid transitions - report error
                             ?ANTLR4_ATN_INVALID_ALT_NUMBER;
                         _ ->
                             TokenStream1 = antlr4_token_stream:consume(TokenStream),
-                            atn_predict_loop(Simulator, TokenStream1, NewConfigSet, ATN, DFA, OuterContext, StartIndex)
+                            atn_predict_loop(Simulator, TokenStream1, NewConfigSet, ATN, DFA, OuterContext, StartIndex, StateMap)
                     end
             end
     end.
 
 %% Internal: compute start state configuration set
-compute_start_state(ATN, DecisionState, _OuterContext) ->
-    %% Get transitions from decision state
+compute_start_state(ATN, DecisionState, _OuterContext, StateMap) ->
     Transitions = DecisionState#atn_state.transitions,
 
-    %% Create initial configurations
     Configs = lists:map(
         fun({#atn_transition{target = Target}, AltIndex}) ->
+            ResolvedTarget = resolve_state(Target, StateMap),
             #atn_config{
-                state = Target,
+                state = ResolvedTarget,
                 alt = AltIndex,
                 context = #prediction_context{context_type = ?PREDICTION_CONTEXT_EMPTY},
                 semantic_context = undefined
@@ -167,33 +172,35 @@ compute_start_state(ATN, DecisionState, _OuterContext) ->
     ),
 
     %% Closure over epsilon transitions
-    closure(#atn_config_set{configs = Configs}, ATN).
+    closure(#atn_config_set{configs = Configs}, ATN, StateMap).
 
 %% Internal: compute reach set on a symbol
-compute_reach_set(#atn_config_set{configs = Configs}, Symbol, ATN) ->
-    %% Get all reachable configs
+compute_reach_set(#atn_config_set{configs = Configs}, Symbol, ATN, StateMap) ->
     NewConfigs = lists:flatmap(
         fun(Config) ->
-            get_reachable_target(Config, Symbol, ATN)
+            get_reachable_target(Config, Symbol, StateMap)
         end,
         Configs
     ),
 
-    %% Compute closure
-    closure(#atn_config_set{configs = NewConfigs}, ATN).
+    closure(#atn_config_set{configs = NewConfigs}, ATN, StateMap).
 
 %% Internal: get reachable targets from a config on a symbol
-get_reachable_target(#atn_config{state = State, alt = Alt, context = Ctx}, Symbol, _ATN) ->
+get_reachable_target(#atn_config{state = State, alt = Alt, context = Ctx}, Symbol, StateMap) ->
     Transitions = State#atn_state.transitions,
     lists:filtermap(
-        fun(Transition) ->
-            case matches_transition(Transition, Symbol) of
-                true ->
-                    #atn_transition{target = Target} = Transition,
-                    {true, #atn_config{state = Target, alt = Alt, context = Ctx}};
-                false ->
-                    false
-            end
+        fun(#atn_transition{is_epsilon = true}) ->
+                %% Skip epsilon transitions - handled by closure
+                false;
+           (Transition) ->
+                case matches_transition(Transition, Symbol) of
+                    true ->
+                        #atn_transition{target = Target} = Transition,
+                        ResolvedTarget = resolve_state(Target, StateMap),
+                        {true, #atn_config{state = ResolvedTarget, alt = Alt, context = Ctx}};
+                    false ->
+                        false
+                end
         end,
         Transitions
     ).
@@ -213,46 +220,74 @@ matches_transition(_, _) ->
     false.
 
 %% Internal: compute closure over epsilon transitions
-closure(ConfigSet, ATN) ->
-    closure(ConfigSet, ConfigSet, ATN, #{}).
+%% Uses StateMap to resolve stale state references
+closure(ConfigSet, ATN, StateMap) ->
+    closure(ConfigSet, ConfigSet, ATN, StateMap, #{}).
 
-closure(#atn_config_set{configs = []} = Result, _WorkList, _ATN, _Visited) ->
+closure(#atn_config_set{configs = []} = Result, _WorkList, _ATN, _StateMap, _Visited) ->
     Result;
-closure(Result, #atn_config_set{configs = []}, _ATN, _Visited) ->
+closure(Result, #atn_config_set{configs = []}, _ATN, _StateMap, _Visited) ->
     Result;
-closure(Result, #atn_config_set{configs = [Config | Rest]}, ATN, Visited) ->
+closure(Result, #atn_config_set{configs = [Config | Rest]}, ATN, StateMap, Visited) ->
     Key = {Config#atn_config.state#atn_state.state_number, Config#atn_config.alt},
     case maps:is_key(Key, Visited) of
         true ->
-            closure(Result, #atn_config_set{configs = Rest}, ATN, Visited);
+            closure(Result, #atn_config_set{configs = Rest}, ATN, StateMap, Visited);
         false ->
             Visited1 = maps:put(Key, true, Visited),
-            %% Get epsilon transitions
-            EpsilonConfigs = get_epsilon_targets(Config, ATN),
+            EpsilonConfigs = get_epsilon_targets(Config, ATN, StateMap),
 
-            %% Add to result and worklist
             #atn_config_set{configs = ResultConfigs} = Result,
             NewResult = Result#atn_config_set{configs = ResultConfigs ++ EpsilonConfigs},
             NewWorkList = #atn_config_set{configs = Rest ++ EpsilonConfigs},
 
-            closure(NewResult, NewWorkList, ATN, Visited1)
+            closure(NewResult, NewWorkList, ATN, StateMap, Visited1)
     end.
 
 %% Internal: get epsilon targets from a config
-get_epsilon_targets(#atn_config{state = State, alt = Alt, context = Ctx}, _ATN) ->
+%% Handles PRECEDENCE transitions by checking against the parser's precedence stack
+get_epsilon_targets(#atn_config{state = State, alt = Alt, context = Ctx}, _ATN, StateMap) ->
     Transitions = State#atn_state.transitions,
     lists:filtermap(
         fun(Transition) ->
             case Transition#atn_transition.is_epsilon of
                 true ->
-                    #atn_transition{target = Target} = Transition,
-                    {true, #atn_config{state = Target, alt = Alt, context = Ctx}};
+                    #atn_transition{target = Target, transition_type = Type, label = Label} = Transition,
+                    ResolvedTarget = resolve_state(Target, StateMap),
+                    case Type of
+                        ?ATN_TRANSITION_PRECEDENCE ->
+                            %% For precedence transitions, check if the current
+                            %% precedence allows this transition. Label holds the
+                            %% required precedence value. We check against the
+                            %% parser's precedence stack via process dictionary.
+                            case check_precedence(Label) of
+                                true ->
+                                    {true, #atn_config{state = ResolvedTarget, alt = Alt, context = Ctx}};
+                                false ->
+                                    false
+                            end;
+                        _ ->
+                            {true, #atn_config{state = ResolvedTarget, alt = Alt, context = Ctx}}
+                    end;
                 false ->
                     false
             end
         end,
         Transitions
     ).
+
+%% Check if a precedence value is allowed by the parser's current precedence stack.
+%% The parser stores its state in the process dictionary under 'antlr4_parser_state'.
+check_precedence(Precedence) ->
+    case get(antlr4_parser_state) of
+        undefined ->
+            %% No parser state — allow all (happens during lexer-only use)
+            true;
+        _State ->
+            %% Use the process-dict API to get current precedence
+            Top = antlr4_parser:get_precedence(),
+            Precedence >= Top
+    end.
 
 %% Internal: get unique alternative if only one exists
 get_unique_alt(#atn_config_set{configs = Configs}) ->

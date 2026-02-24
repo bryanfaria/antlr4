@@ -174,6 +174,15 @@ Parser(parser, funcs, atn, sempredFuncs, superClass) ::= <<
 %% Serialized ATN
 -define(SERIALIZED_ATN, <atn>).
 
+%% Export rule functions
+<if(parser.rules)>
+-export([<parser.rules:{r | '<r.name>'/1}; separator=", ">]).
+<endif>
+
+<if(sempredFuncs)>
+-export([sempred/3]).
+<endif>
+
 %% Create a new parser state (stored in ETS)
 new(Input) ->
     ATN = antlr4_atn_deserializer:deserialize(?SERIALIZED_ATN),
@@ -213,8 +222,6 @@ sempred(LocalCtx, RuleIndex, PredIndex) ->
 >>
 
 RuleFunction(currentRule, args, code, locals, ruleCtx, altLabelCtxs, namedActions, finallyAction, postamble, exceptions) ::= <<
--export(['<currentRule.escapedName>'/1]).
-
 %% Rule: <currentRule.name>
 '<currentRule.escapedName>'(State0) ->
     antlr4_parser:init(State0),
@@ -246,10 +253,9 @@ RuleFunction(currentRule, args, code, locals, ruleCtx, altLabelCtxs, namedAction
 
 LeftRecursiveRuleFunction(currentRule, args, code, locals, ruleCtx, altLabelCtxs, namedActions, finallyAction, postamble) ::= <<
 %% Left-recursive rule: <currentRule.name>
-'<currentRule.escapedName>'(State0) ->
+'<currentRule.escapedName>'(State0) when is_map(State0); is_tuple(State0) ->
     antlr4_parser:init(State0),
-    '<currentRule.escapedName>'(0).
-
+    '<currentRule.escapedName>'(0);
 '<currentRule.escapedName>'(Precedence) ->
     _ParentCtx = antlr4_parser:get_ctx(),
     _ParentState = antlr4_parser:get_state_number(),
@@ -340,9 +346,7 @@ antlr4_parser:sync(),
 <if(preamble)>
 <preamble; separator=",\n">,
 <endif>
-star_loop_<choice.stateNumber>().
-
-star_loop_<choice.stateNumber>() ->
+StarLoop_<choice.stateNumber> = fun Loop() ->
     case <loopExpr> of
         true ->
             <alts; separator=",\n            ">,
@@ -351,10 +355,12 @@ star_loop_<choice.stateNumber>() ->
             <if(iteration)>
             <iteration>,
             <endif>
-            star_loop_<choice.stateNumber>();
+            Loop();
         false ->
             ok
     end
+end,
+StarLoop_<choice.stateNumber>()
 >>
 
 LL1PlusBlockSingleAlt(choice, loopExpr, alts, preamble, iteration) ::= <<
@@ -363,18 +369,19 @@ antlr4_parser:sync(),
 <if(preamble)>
 <preamble; separator=",\n">,
 <endif>
-plus_loop_<choice.stateNumber>(true).
-
-plus_loop_<choice.stateNumber>(true) ->
-    <alts; separator=",\n    ">,
-    antlr4_parser:set_state(<choice.stateNumber>),
-    antlr4_parser:sync(),
-    <if(iteration)>
-    <iteration>,
-    <endif>
-    plus_loop_<choice.stateNumber>(<loopExpr>);
-plus_loop_<choice.stateNumber>(false) ->
-    ok
+PlusLoop_<choice.stateNumber> = fun
+    Loop(true) ->
+        <alts; separator=",\n        ">,
+        antlr4_parser:set_state(<choice.stateNumber>),
+        antlr4_parser:sync(),
+        <if(iteration)>
+        <iteration>,
+        <endif>
+        Loop(<loopExpr>);
+    Loop(false) ->
+        ok
+end,
+PlusLoop_<choice.stateNumber>(true)
 >>
 
 AltBlock(choice, preamble, alts, error) ::= <<
@@ -401,42 +408,49 @@ end}; separator=";\n">
 StarBlock(choice, alts, Sync, iteration) ::= <<
 antlr4_parser:set_state(<choice.stateNumber>),
 antlr4_parser:sync(),
-star_block_<choice.stateNumber>(antlr4_parser:adaptive_predict(<choice.decision>)).
-
-star_block_<choice.stateNumber>(Alt) when Alt =/= <choice.exitAlt>, Alt =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER ->
-    case Alt of
-        1<if(!choice.ast.greedy)> + 1<endif> ->
-            <if(iteration)>
-            <iteration>,
-            <endif>
-            <alts>
-    end,
-    antlr4_parser:set_state(<choice.loopBackStateNumber>),
-    antlr4_parser:sync(),
-    star_block_<choice.stateNumber>(antlr4_parser:adaptive_predict(<choice.decision>));
-star_block_<choice.stateNumber>(_Alt) ->
-    ok
+StarLoop_<choice.stateNumber> = fun Loop() ->
+    StarAlt_<choice.stateNumber> = antlr4_parser:adaptive_predict(<choice.decision>),
+    case StarAlt_<choice.stateNumber> =/= <choice.exitAlt> andalso StarAlt_<choice.stateNumber> =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER of
+        true ->
+            case StarAlt_<choice.stateNumber> of
+                1<if(!choice.ast.greedy)> + 1<endif> ->
+                    <if(iteration)>
+                    <iteration>,
+                    <endif>
+                    <alts>
+            end,
+            antlr4_parser:set_state(<choice.loopBackStateNumber>),
+            antlr4_parser:sync(),
+            Loop();
+        false ->
+            ok
+    end
+end,
+StarLoop_<choice.stateNumber>()
 >>
 
 PlusBlock(choice, alts, error) ::= <<
 antlr4_parser:set_state(<choice.blockStartStateNumber>),
 antlr4_parser:sync(),
-plus_block_<choice.stateNumber>(1<if(!choice.ast.greedy)> + 1<endif>).
-
-plus_block_<choice.stateNumber>(Alt) when Alt =/= <choice.exitAlt>, Alt =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER ->
-    case Alt of
-        <alts:{alt | <i><if(!choice.ast.greedy)> + 1<endif> ->
-            <alt>}; separator=";\n        ">
-        <if(error)>;
-        _ ->
-            <error>
-        <endif>
-    end,
-    antlr4_parser:set_state(<choice.loopBackStateNumber>),
-    antlr4_parser:sync(),
-    plus_block_<choice.stateNumber>(antlr4_parser:adaptive_predict(<choice.decision>));
-plus_block_<choice.stateNumber>(_Alt) ->
-    ok
+PlusLoop_<choice.stateNumber> = fun Loop(PlusAlt_<choice.stateNumber>) ->
+    case PlusAlt_<choice.stateNumber> =/= <choice.exitAlt> andalso PlusAlt_<choice.stateNumber> =/= ?ANTLR4_ATN_INVALID_ALT_NUMBER of
+        true ->
+            case PlusAlt_<choice.stateNumber> of
+                <alts:{alt | <i><if(!choice.ast.greedy)> + 1<endif> ->
+                    <alt>}; separator=";\n                ">
+                <if(error)>;
+                _ ->
+                    <error>
+                <endif>
+            end,
+            antlr4_parser:set_state(<choice.loopBackStateNumber>),
+            antlr4_parser:sync(),
+            Loop(antlr4_parser:adaptive_predict(<choice.decision>));
+        false ->
+            ok
+    end
+end,
+PlusLoop_<choice.stateNumber>(1<if(!choice.ast.greedy)> + 1<endif>)
 >>
 
 Sync(s) ::= "antlr4_parser:sync()"
@@ -813,7 +827,7 @@ RuleActionFunction(r, actions) ::= <<
 >>
 
 RuleSempredFunction(r, actions) ::= <<
-'<r.escapedName>_sempred'(_LocalCtx, PredIndex, _LexerState) ->
+'<r.escapedName>_sempred'(_LocalCtx, PredIndex) ->
     case PredIndex of
         <actions:{index | <index> ->
             <actions.(index)>}; separator=";\n        ">;

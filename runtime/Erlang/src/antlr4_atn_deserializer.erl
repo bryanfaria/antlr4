@@ -255,7 +255,7 @@ read_edges_loop(DataArray, Pos, ATN, Sets, Remaining) ->
 
     read_edges_loop(DataArray, Pos6, ATN1, Sets, Remaining - 1).
 
-create_transition(Type, Target, Arg1, Arg2, _Arg3, Sets) ->
+create_transition(Type, Target, Arg1, Arg2, Arg3, Sets) ->
     IsEpsilon = Type =:= ?ATN_TRANSITION_EPSILON orelse
                 Type =:= ?ATN_TRANSITION_ACTION orelse
                 Type =:= ?ATN_TRANSITION_RULE orelse
@@ -268,6 +268,9 @@ create_transition(Type, Target, Arg1, Arg2, _Arg3, Sets) ->
         ?ATN_TRANSITION_RANGE -> #interval{start_index = Arg1, stop_index = Arg2};
         ?ATN_TRANSITION_SET -> lists:nth(Arg1 + 1, Sets);
         ?ATN_TRANSITION_NOT_SET -> lists:nth(Arg1 + 1, Sets);
+        ?ATN_TRANSITION_PRECEDENCE -> Arg1;  %% Arg1 is precedence value
+        ?ATN_TRANSITION_RULE -> {Arg1, Arg2, Arg3};  %% {ruleIndex, precedence, followState}
+        ?ATN_TRANSITION_PREDICATE -> {Arg1, Arg2, Arg3};  %% {ruleIndex, predIndex, isCtxDependent}
         _ -> undefined
     end,
     ActionIndex = case Type of
